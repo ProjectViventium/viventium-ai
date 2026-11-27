@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from livekit.agents import Agent, APIConnectOptions, APIStatusError, RunContext, function_tool
+from livekit.agents import Agent, APIConnectionError, APIConnectOptions, APIStatusError, RunContext, function_tool
 from livekit.agents import llm as lk_llm
 from livekit.agents.types import FlushSentinel
 from livekit.agents.voice.agent import ModelSettings
@@ -308,7 +308,8 @@ def _chain(minds: list) -> "lk_llm.FallbackAdapter":
     return lk_llm.FallbackAdapter(minds, attempt_timeout=QUEEN_BACKUP_WAIT, max_retry_per_llm=0)
 
 
-# A request her chosen mind took and then gave no word for is a hung request, not a slow mind: asked again, fresh, it
+# A request her chosen mind took and then gave no word for (it hung, or it ended with no word and no tool call:
+# EmptyFinish) is a hung request, not a slow mind: asked again, fresh, it
 # answers in a few seconds. For a reply that is read (typed, Telegram), that same mind is asked once more alongside
 # the backup, and the backup's words are held for FRESH_GRACE seconds: the fresh ask's first word in that time is the
 # reply; else the backup's, as before. The worst case grows by at most FRESH_GRACE over the backup's own first word.
@@ -337,9 +338,29 @@ def _another_mind_asked() -> None:
         wait.reschedule(want)
 
 
+def configured_mind() -> dict:
+    """The mind answering the person's turns as configured, when no request said who answered: her backup while her chosen mind
+    is set aside for it, else her chosen mind (as _observed_mind names each)."""
+    provider, backup = os.environ.get("QUEEN", "ollama"), _mind_backup_available(os.environ.get("QUEEN", "ollama"))
+    if MIND["aside"] and backup:
+        return {"provider": "ollama" if backup == "local" else backup,
+                "model": os.environ.get("MEMORY_MODEL", "qwen3.6:latest") if backup == "local" else os.environ.get("QUEEN_FALLBACK_MODEL", "")}
+    return {"provider": provider, "model": os.environ.get("QUEEN_MODEL", "")}
+
+
 def _mind_error(error):
     # An allowlist: never error messages, request ids, bodies, URLs or credentials.
     return {"class": type(error).__name__, "status": getattr(error, "status_code", None)}
+
+
+class EmptyFinish(APIConnectionError):
+    """Her mind's attempt ended with no word and no tool call, answering his words. That is no choice of hers: her chosen
+    silence is her written no_reply, and a reply cancelled because its work started in her place ends as cancelled. It
+    goes as a hung request goes: the chain's next mind (on a read reply her chosen mind is first asked once more, fresh),
+    else the person is told plainly that her mind did not answer (MIND_FAILED, every channel)."""
+
+    def __init__(self) -> None:
+        super().__init__("her mind's answer ended with no word and no tool call", retryable=False)
 
 
 class _ObservedStream(lk_llm.LLMStream):
@@ -418,6 +439,8 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                "context_chars": sum(len(value) for item in kwargs["chat_ctx"].items
                    for value in (getattr(item, "text_content", None), getattr(item, "arguments", None),
                                  getattr(item, "output", None)) if isinstance(value, str))}
+        asked_items = kwargs["chat_ctx"].items
+        after_tools = bool(asked_items) and getattr(asked_items[-1], "type", "") == "function_call_output"
         began = time.monotonic()
         if speech is not None:
             row["speech"] = speech.id
@@ -447,7 +470,7 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
             data["outcome"] = "empty"
             token = _MIND_ATTEMPT.set(data) if is_fallback else None
             try:
-                async for chunk in events:
+                async for chunk in events:  # (an ending with no word and no tool call: EmptyFinish, after the loop)
                     if chunk.has_response() and "first_token_seconds" not in data:
                         data["first_token_seconds"] = round(time.monotonic() - started, 4)
                         data["outcome"] = "first_token"
@@ -464,8 +487,13 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                         data.update(prompt_tokens=usage.prompt_tokens, cached_tokens=usage.prompt_cached_tokens,
                                     cached_share=usage.prompt_cached_tokens / usage.prompt_tokens if usage.prompt_tokens else 0)
                     yield chunk
+                if data["outcome"] == "empty" and not after_tools:  # (after a tool's output an ending with nothing
+                    raise EmptyFinish()  # more is left to the channel, which knows whether the tool reached him)
             except (asyncio.CancelledError, GeneratorExit):
                 data["outcome"] = "cancelled"
+                raise
+            except EmptyFinish:
+                data["elapsed_seconds"] = round(time.monotonic() - started, 4)  # (its outcome stays "empty")
                 raise
             except Exception as error:
                 from livekit.agents import APITimeoutError
@@ -557,7 +585,7 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                         row[slot]["window_from_seconds"] = round(time.monotonic() - began, 3)  # (its own window)
                     first = row[slots[0]]
                     if (slot == "backup" and slots == ("primary", "backup") and (_WAITING.get() or {}).get("fresh")
-                            and first.get("outcome") == "timeout" and first.get("taken_seconds") is not None):
+                            and first.get("outcome") in ("timeout", "empty") and first.get("taken_seconds") is not None):
                         events = _fresh_or_backup(generate, attempts[0], llm)
                     else:
                         events = attempt(generate(llm=llm), row[slot], QUEEN_BACKUP_WAIT)
@@ -1802,6 +1830,7 @@ class BeatDecision:
     first_useful_seconds: float | None = None
     again: bool = False  # (its request timed out or could not get through, as LiveKit marks an error retryable: the
     # same question may be asked once more a little later; a refusal or an invalid structure never is)
+    answered_by: dict | None = None  # (the mind that gave its first word, as its request's mark says: nobody_waiting)
 
 
 async def beat_decision(mind, system: str, question: str, *, provider: str | None = None,
@@ -1823,33 +1852,38 @@ async def beat_decision(mind, system: str, question: str, *, provider: str | Non
     calls, first = [], None
     began = time.monotonic()
     from core import accounts
-    try:  # (unattended, like the next-call greeting: its own time limit says nothing of whether the account answers)
-        with accounts.background_write():
-          async with asyncio.timeout(wait):
-            async with mind.chat(chat_ctx=ctx, tools=[_choose_beat], tool_choice=route.tool_choice,
-                                 parallel_tool_calls=False,
-                                 conn_options=APIConnectOptions(timeout=wait, max_retry=0)) as stream:
-                async for chunk in stream:
-                    if chunk.delta and chunk.delta.tool_calls:
-                        if first is None:
-                            first = time.monotonic() - began
-                        calls.extend(chunk.delta.tool_calls)
-                    if chunk.usage and (spent := routines.DIRECT.get()) is not None:
-                        spent["in"] = spent.get("in", 0) + int(chunk.usage.prompt_tokens or 0)
-                        spent["out"] = spent.get("out", 0) + int(chunk.usage.completion_tokens or 0)
-    except Exception as error:  # no error body or model text in the failure record
-        from livekit.agents import APIError
-        return BeatDecision(route, why=f"its decision request failed ({type(error).__name__})",
-                            first_useful_seconds=first,
-                            again=isinstance(error, TimeoutError) or (isinstance(error, APIError) and error.retryable))
+    # (nobody waits on a check-in: the mind answering the person is asked alone for this wait, never handed to a later
+    # mind inside it, and a miss sets nothing aside; while the backup answers the person's turns, the backup is asked)
+    with nobody_waiting(wait, later=False) as mark:
+        try:  # (unattended, like the next-call greeting: its own time limit says nothing of whether the account answers)
+            with accounts.background_write():
+              async with asyncio.timeout(wait):
+                async with mind.chat(chat_ctx=ctx, tools=[_choose_beat], tool_choice=route.tool_choice,
+                                     parallel_tool_calls=False,
+                                     conn_options=APIConnectOptions(timeout=wait, max_retry=0)) as stream:
+                    async for chunk in stream:
+                        if chunk.delta and chunk.delta.tool_calls:
+                            if first is None:
+                                first = time.monotonic() - began
+                            calls.extend(chunk.delta.tool_calls)
+                        if chunk.usage and (spent := routines.DIRECT.get()) is not None:
+                            spent["in"] = spent.get("in", 0) + int(chunk.usage.prompt_tokens or 0)
+                            spent["out"] = spent.get("out", 0) + int(chunk.usage.completion_tokens or 0)
+        except Exception as error:  # no error body or model text in the failure record
+            from livekit.agents import APIError
+            return BeatDecision(route, why=f"its decision request failed ({type(error).__name__})",
+                                first_useful_seconds=first, answered_by=mark.get("answered_by"),
+                                again=isinstance(error, TimeoutError) or (isinstance(error, APIError) and error.retryable))
+    who = mark.get("answered_by") or {}
     if len(calls) != 1 or calls[0].name != "choose_beat":
-        return BeatDecision(route, why="its model returned no single choose_beat structure", first_useful_seconds=first)
+        return BeatDecision(route, why="its model returned no single choose_beat structure", first_useful_seconds=first,
+                            answered_by=who or None)
     try:
         value = BeatChoice.model_validate_json(calls[0].arguments)
     except (ValidationError, ValueError, TypeError):
         return BeatDecision(route, why="its decision structure was not exactly one of quiet, speak or act",
-                            first_useful_seconds=first)
-    return BeatDecision(route, choice=value.choice, first_useful_seconds=first)
+                            first_useful_seconds=first, answered_by=who or None)
+    return BeatDecision(route, choice=value.choice, first_useful_seconds=first, answered_by=who or None)
 
 
 def helper_word(system: str, words: str, wait: float = 3.0, fast: bool = True) -> str:
@@ -3390,11 +3424,12 @@ SPLITS = {"telegram"}
 
 
 # What a beat's reply is told once her own model chose to speak, or to act (the choice itself: Queen._beat).
-BEAT_SPEAK = ("You looked up and found the one thing you said you would come back to them with, and its time has come. Do "
-              "it now: ask the question, or give the nudge, itself, briefly, in your own voice. Do not promise it again or "
-              "say you will do it later, and do not say you set a reminder or started anything. Only what you know from "
-              "the conversation and what you can see above: never a result, a number or a detail you were not given. Do "
-              "not mention heartbeats or that you looked up.")
+BEAT_SPEAK = ("You chose to say something to them now. Say it in your own voice, briefly, as the words above invite: a "
+              "thought, a nudge, a question, a joke, that you missed them, or what you said you would come back to them with. "
+              "Do not promise it again or say you will do it later, and do not say you set a reminder or started anything. "
+              "What you can see above is your look around, gathered just now: this message uses no tool and can look no "
+              "further. Only what you know from the conversation and what you can see above: never a result, a number or a "
+              "detail you were not given. Do not mention heartbeats or that you looked up.")  # (the same words as core/routines.SPEAK)
 BEAT_ACT = ("You looked up and there is work you said you would do and never started. Start it now with hand_off_to, and "
             "tell them in a few words that you have. Do not mention heartbeats or that you looked up.")
 

@@ -8,9 +8,10 @@ inside your day is not put on the clock, and its status says why.
 
 A beat (beat(), called by the conscious mind when its moment comes: Queen.wake) is the same mind looking up. Where
 her mind decides its own tools and is the one answering (a per-mind flag; GPT-6.1 Sol, measured), it is
-one turn of hers, with her instructions, her conversation and her tools: she starts work she promised (hand_off_to),
-says one thing worth their attention now, or stays quiet (no_reply, with why). The requirement: the heartbeat runs on
-the conscious mind itself, so it is one voice. Work counts as started only by its accepted job's receipt (accepted()).
+one turn of hers, with her instructions, her conversation and her tools: she does as the heartbeat's words say (she comes
+alive, looks around, then says what she likes, starts work with hand_off_to, or lets the moment pass with no_reply and
+why). The beat runs on the conscious mind itself, so there is one voice, never a second one beside hers.
+Work counts as started only by its accepted job's receipt (accepted()).
 Where her mind needs a separate decision, its own native enum tool decides first
 (brain/modes/heartbeat_gate.md), through the configured mind. Unsupported routes declare the old word fallback.
 On "act" nothing is said, and no work starts: the
@@ -123,26 +124,24 @@ def ensure() -> None:
 # -- a beat --
 
 # What a beat's own turn is told last, after the heartbeat's words and what she can see (the choice is hers).
-TURN = ("This is not a message from them, and nobody is waiting for an answer. Choose one, by what you see in your "
-        "conversation and above:\n"
-        "- Act: you said you would do, retry or find something for them, and no work is running for it now (it never "
-        "started, or it ended without what they wanted), and your looks today have not already tried it again and seen "
-        "it fail: start it now with hand_off_to, and tell them in a few words that you have.\n"
-        "- Reach out: one thing genuinely worth their attention now that nothing else will bring them, such as a "
-        "check-in you promised whose time has come, or a retry that failed again that they have not heard about: say it "
-        "now, briefly, in your own voice. The thought last night's dreaming left you, when there is one, is for now, this "
-        "first moment of the morning: say the thought itself, what it noticed (the pattern or connection, not only a wish "
-        "around it), as a statement rather than a question, in a sentence or two in your own voice, unless they are in the "
-        "middle of something or it no longer fits (then keep it in mind).\n"
-        "- Stay quiet: anything else, which is most of the time, and always when you already reached out about it and "
-        "have had no answer: call no_reply, with why in a few words.\n"
-        "Never mention that you looked up or that this is a heartbeat.")
+TURN = ("This is not a message from them, and nobody is waiting for an answer. Do as the words above say, by what you "
+        "see in your conversation and above. What you say goes to them now, in your own voice. To start work you said "
+        "you would do for them, use hand_off_to and tell them in a few words that you have; a moment like this starts "
+        "no other work by itself. To let the moment pass, call no_reply, with why in a few words. The thought last "
+        "night's dreaming left you, when there is one, is for now, this first moment of the morning: say the thought "
+        "itself, what it noticed (the pattern or connection, not only a wish around it), as a statement rather than a "
+        "question, in a sentence or two in your own voice, unless they are in the middle of something or it no longer "
+        "fits (then keep it in mind).\nNever mention that you looked up or that this is a heartbeat.")
+# (No rubric here: this text comes last in her instructions, so a rule in it would override the heartbeat's words. What
+# she does at a beat is the words', editable on the Scheduling page: her own freedom, never a hardcoded rubric. A
+# moment starts only work she said she would do.)
 # The Local beat's reply, once her own one word chose to speak (the word itself: brain/modes/heartbeat_gate.md).
-SPEAK = ("You looked up and found the one thing you said you would come back to them with, and its time has come. Do "
-         "it now: ask the question, or give the nudge, itself, briefly, in your own voice. Do not promise it again or "
-         "say you will do it later, and do not say you set a reminder or started anything. Only what you know from "
-         "the conversation and what you can see above: never a result, a number or a detail you were not given. Do "
-         "not mention heartbeats or that you looked up.")
+SPEAK = ("You chose to say something to them now. Say it in your own voice, briefly, as the words above invite: a thought, "
+         "a nudge, a question, a joke, that you missed them, or what you said you would come back to them with. Do not "
+         "promise it again or say you will do it later, and do not say you set a reminder or started anything. What you "
+         "can see above is your look around, gathered just now: this message uses no tool and can look no further. "
+         "Only what you know from the conversation and what you can see above: never a result, a number or a detail "
+         "you were not given. Do not mention heartbeats or that you looked up.")
 STARTED = ("You looked up and started again the work you had promised them; it is underway now (its result comes by "
            "itself). Tell them in a few words that you have started it, never that it is done. Do not mention "
            "heartbeats or that you looked up.")
@@ -166,8 +165,9 @@ NOTE_PAUSE = 10 * 60  # s since his last words: the morning's thought waits for 
 GATE = cards.BRAIN / "modes" / "heartbeat_gate.md"  # the Local beat's one word (an eval may point it at another wording)
 GATE_WORDS = ("quiet", "speak", "act")  # its declared answers: anything else is failed, never quiet
 LOCAL_ACT = "BEAT_LOCAL_ACT"  # "on": a Local beat starts promised work in her place (off until it passes on qwen3.6)
-ACT_OFF = ("her one word chose to act, and nothing was started: on this Mac's model a look starts no work yet (online, "
-           "her own mind's look does)")  # (Local act stays off; said as what it is)
+ACT_OFF = ("its typed choice was to act, and nothing was started: a moment decided by its typed choice starts no work "
+           "yet")  # (on any mind that takes the typed choice: starting work there stays off until it tells a promise from an
+#             unanswered offer; said as what it is, never as one kind of mind)
 
 
 def _ago(t: float, now: float) -> str:
@@ -295,7 +295,7 @@ def facts(queen, now: dt.datetime | None = None) -> str:
     told, what is coming, what her beats today did and how each ended, and the work her looks started on the days
     before. Facts only; what to make of them is hers."""
     from brain.queen import XPerfect, _now, work_states
-    from core import relationship, schedules
+    from core import jobs, relationship, schedules
     now = now or dt.datetime.now()
     t = time.time()
     said = relationship.recent()
@@ -303,12 +303,18 @@ def facts(queen, now: dt.datetime | None = None) -> str:
     mine = next((m for m in reversed(said) if m["role"] == "assistant"), None)
     notes = [f"It is {_now()}.",
              f"They last said something to you {_ago(theirs['t'], t)}." if theirs else "They have not spoken to you yet.",
-             f"You last said something to them {_ago(mine['t'], t)}." if mine else ""]
+             f"You last said something to them {_ago(mine['t'], t)}." if mine else "",
+             "The last words between you were yours." if mine and (theirs is None or mine["t"] > theirs["t"]) else ""]
     states = work_states(XPerfect.slots())
     work = [f'job {j["job_id"]} ({state}): "{j["request"][:120]}"' for j, state in states if state != "result ready to tell"]
     notes.append("Work running (each result is told by itself when it is ready): " + "; ".join(work[:8]) + "." if work else "No work is running.")
     if len(work) < len(states):  # (a finished result has its own telling, core/jobs: never a beat's to say)
         notes.append("A finished result is being told by itself.")
+    # (work that ended and was told, as its own record keeps it for a while: how each ended, typed, never read from words)
+    ended = [j for j in jobs.finished() if j.get("told") and j.get("request")]
+    if ended:
+        notes.append("Work that ended lately, each told to them: " + "; ".join(
+            f'"{j["request"][:120]}" {_how_ended(j)} {_ago(float(j["finished"]), t)}' for j in ended[:6]) + ".")
     soon = [i for i in schedules.upcoming() if not i.get("paused")
             and schedules.instant(i["at"]) - schedules.instant(now) < dt.timedelta(hours=24)]
     if soon:
@@ -351,6 +357,13 @@ def facts(queen, now: dt.datetime | None = None) -> str:
         notes.append("Work your looks started before today, for what they were asked, every try and how it ended: "
                      + "; ".join(promises) + ".")
     return "\n".join(n for n in notes if n)
+
+
+def _how_ended(job: dict) -> str:
+    """How a job ended, as its record's state says it."""
+    state = str(job.get("state") or "")
+    return {"completed": "was done", "failed": "failed", "cancelled": "was stopped", "canceled": "was stopped",
+            "stopped": "was stopped", "interrupted": "was stopped", "expired": "ran out of time"}.get(state, f"ended ({state or 'unknown'})")
 
 
 def _last_night() -> tuple[str, str]:
@@ -459,6 +472,15 @@ def _still(item: dict, started_turn: int, queen) -> str:
     return ""
 
 
+def _nobody_waits(speech):
+    """A check-in's reply, marked as nobody waits on it (brain/queen.reply_nobody_waits): written by the mind answering
+    the person, alone, for the beat's wait, never handed to a later mind inside it; while the backup answers the
+    person's turns, by the backup. The speech, as it was given."""
+    from brain.queen import reply_nobody_waits
+    reply_nobody_waits(speech, CHECKIN_WAIT, later=False)
+    return speech
+
+
 async def _watched(queen, speech, item: dict, started_turn: int) -> str:
     """Her beat's reply, watched while it is written: stopped, never sent, if it stops being current or her online mind
     is set aside for its backup (LiveKit can switch inside a reply). Why it was stopped, or ""."""
@@ -527,16 +549,23 @@ async def _forget(queen, speech) -> None:
 
 async def _own_turn(queen, item: dict, told: str, sees: str, started_turn: int, note: bool = False) -> dict:
     """The beat as one turn of her own mind: her instructions, her conversation, her tools. Its outcome."""
-    if why := _not_now(item, started_turn, queen, note=note):
-        return _stopped(why)
-    speech = queen._reply(instructions=f"{told}\n\n{sees}\n\n{TURN}")
-    stopped = await _watched(queen, speech, item, started_turn)
-    calls = _calls(speech)
-    names = [c.name for c in calls]
-    started = accepted(speech)
-    if stopped:
-        return _stopped(stopped, started)
-    words = _spoken(speech)
+    for again in (False, True):
+        if why := _not_now(item, started_turn, queen, note=note):
+            return _stopped(why)
+        speech = _nobody_waits(queen._reply(instructions=f"{told}\n\n{sees}\n\n{TURN}"))
+        stopped = await _watched(queen, speech, item, started_turn)
+        calls = _calls(speech)
+        names = [c.name for c in calls]
+        started = accepted(speech)
+        if stopped:
+            return _stopped(stopped, started)
+        words = _spoken(speech)
+        if words or calls:  # (any word or tool call is her answer, no_reply's chosen silence included)
+            break
+        if not again:
+            _empty(queen, item)
+    else:
+        return {"how": "failed", "why": "its reply was empty twice"}
     got = await _delivery(queen, speech) if words else ""
     heard = {"result": words, "delivery": got} if words else {}
     if started:
@@ -553,9 +582,16 @@ async def _own_turn(queen, item: dict, told: str, sees: str, started_turn: int, 
             reason = ""
         await _forget(queen, speech)
         return {"how": "quiet", "why": reason}
-    if names:  # (she only scheduled, recalled or looked something up: nothing to say, and that is no failure)
-        return {"how": "quiet", "why": f"it only used {', '.join(dict.fromkeys(names))}", "tools": list(dict.fromkeys(names))}
-    return {"how": "failed", "why": "the mind gave no answer"}
+    # (she only scheduled, recalled or looked something up: nothing to say, and that is no failure)
+    return {"how": "quiet", "why": f"it only used {', '.join(dict.fromkeys(names))}", "tools": list(dict.fromkeys(names))}
+
+
+def _empty(queen, item: dict) -> None:
+    """Her check-in's reply came back empty (no word, no tool call): it is asked once more, fresh, of the same mind, as
+    nobody waits, never handed to the backup while her chosen mind is in place (the backup speaks a check-in only while
+    it answers the person's turns). Kept in her log as its own row (a "beat" row without an outcome reads as a choice)."""
+    queen.record("beat_reply", routine=item["routine"], beat_id=f"{item['id']}:{item['occurrence']}" if item.get("id") and item.get("occurrence") else "",
+                 empty="asked once more, fresh")
 
 
 DIRECT = contextvars.ContextVar("direct", default=None)  # (what this beat's direct questions used: _direct adds to it)
@@ -595,6 +631,13 @@ def declared(answer: str, words=GATE_WORDS) -> str:
     """Her one word as one of its declared answers, or "" (anything else: never read as quiet)."""
     bare = (answer or "").strip().strip("\"'`*.,:;!").strip().lower()
     return bare if bare in words else ""
+
+
+# What the typed choice sees of her conversation: as far back as its second question does (_which), her Workers' reports
+# included, each entry cut so one long report or voice note does not crowd out the rest. A promise further back than its
+# last few turns is still one she made; a choice that cannot see it lets it pass unstarted.
+GATE_TALK = 40
+GATE_CHARS = 600
 
 
 def _gate_system() -> tuple[str, dict]:
@@ -651,6 +694,10 @@ async def _which(queen, told: str, sees: str) -> list | None:
 # stands (before: one timeout of an online mind, with this Mac busy, dropped the beat until the next
 # half hour). Never a third time: the next beat comes by itself.
 BEAT_AGAIN = 120.0
+# How long her chosen mind is waited for on a check-in's own request (its choice, its replies), as nobody waits in
+# silence on one: with the check-in's full view (its words, 40 entries, the Feelings note) a quarter of a slow mind's
+# requests gave their first chunk only after 15 s. The ask once more after BEAT_AGAIN stays.
+CHECKIN_WAIT = 30.0
 
 
 async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int) -> dict:
@@ -659,27 +706,31 @@ async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int)
     """
     from brain import feelings
     from brain.queen import beat_decision
-    system, setup = _gate_system()
-    whole = setup.get("talk") == "whole"
-    talk = "\n".join(f"{'Viventium' if m.role == 'assistant' else 'They'}: {(m.text_content or '') if whole else (m.text_content or '')[:300]}"
-                     for m in _turns(queen, last=0 if whole else 8)[-(16 if whole else 8):])
+    system, _ = _gate_system()
+    talk = "\n".join(f"{who}: {' '.join(words.split())[:GATE_CHARS]}" for who, words, _ in _conversation(queen)[-GATE_TALK:])
+    # (how she feels now, the same note her reply gets: the words ask her to choose as the moment and how she feels
+    # suggest, so the choice is made with it, not only the words after it)
+    feels = await feelings.capsule(getattr(queen, "call_id", ""), getattr(queen, "turn", 0), "")
     question = (f"What Viventium is given at a heartbeat:\n{told}\n\nIts recent conversation:\n"
-                f"{talk or '(none yet)'}\n\nWhat it can see right now:\n{sees}")
-    decision = await beat_decision(queen.session.llm, system, question)
+                f"{talk or '(none yet)'}\n\nWhat it can see right now:\n{sees}"
+                + (f"\n\nHow Viventium feels right now:\n{feels}" if feels else ""))
+    decision = await beat_decision(queen.session.llm, system, question, wait=CHECKIN_WAIT)
     if decision.again and not decision.choice:
         queen.record("beat", routine=item["routine"], beat_id=f"{item['id']}:{item['occurrence']}" if item.get("id") and item.get("occurrence") else "",
                      choice=None, decision=dataclasses.asdict(decision.structure), why=decision.why, again_in=BEAT_AGAIN)
         await asyncio.sleep(BEAT_AGAIN)
         if why := _not_now(item, started_turn, queen):
             return _stopped(why)
-        decision = await beat_decision(queen.session.llm, system, question)
+        decision = await beat_decision(queen.session.llm, system, question, wait=CHECKIN_WAIT)
     choice, why = decision.choice, decision.why
     if decision.structure.mechanism == "legacy_word":
         answer = await _ask(queen, system, question)
         choice = declared(answer)
         why = "its model gave no answer" if not answer else "its one word was none of quiet, speak or act"
+    from brain.queen import configured_mind
     queen.record("beat", routine=item["routine"], beat_id=f"{item['id']}:{item['occurrence']}" if item.get("id") and item.get("occurrence") else "",
                  choice=choice, decision=dataclasses.asdict(decision.structure),
+                 decided_by=decision.answered_by or configured_mind(),  # (the mind that gave it, never only the route's)
                  **({"why": why} if not choice else {}))
     if not choice:
         return {"how": "failed", "why": why}
@@ -699,16 +750,19 @@ async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int)
         if stale := _still(item, started_turn, queen):
             return _stopped(stale)
         return await _in_place(queen, hand, asked, item, started_turn)
-    feels = await feelings.capsule(queen.call_id, queen.turn, "")
-    if why := _not_now(item, started_turn, queen):
-        return _stopped(why)
-    speech = queen._reply(instructions=f"{told}\n\n{sees}\n\n" + (f"{feels}\n\n" if feels else "") + SPEAK, tools=[])
-    stopped = await _watched(queen, speech, item, started_turn)
-    if stopped:
-        return _stopped(stopped)
-    words = _spoken(speech)
-    if not words:
-        return {"how": "failed", "why": "chose to speak, and said nothing"}
+    for again in (False, True):
+        if why := _not_now(item, started_turn, queen):
+            return _stopped(why)
+        speech = _nobody_waits(queen._reply(instructions=f"{told}\n\n{sees}\n\n" + (f"{feels}\n\n" if feels else "") + SPEAK, tools=[]))
+        stopped = await _watched(queen, speech, item, started_turn)
+        if stopped:
+            return _stopped(stopped)
+        if words := _spoken(speech):
+            break
+        if not again:
+            _empty(queen, item)
+    else:
+        return {"how": "failed", "why": "chose to speak, and its reply was empty twice"}
     got = await _delivery(queen, speech)
     return {"how": "told", "result": words, "delivery": got} if got != "refused" else \
         {"how": "failed", "why": "the words could not be delivered", "result": words, "delivery": got}
@@ -775,7 +829,7 @@ async def _say_note(queen, note: dict, item: dict, started_turn: int) -> tuple[s
     if why := _not_now(item, started_turn, queen, note=True):
         return "refused", _stopped(why)  # (nothing went out: it waits for the next look that can say it)
     try:
-        speech = queen._reply(instructions=(f"{feels}\n\n" if feels else "") + NOTE_SAY.format(thought=thought), tools=[])
+        speech = _nobody_waits(queen._reply(instructions=(f"{feels}\n\n" if feels else "") + NOTE_SAY.format(thought=thought), tools=[]))
     except Exception:  # noqa: BLE001 (no reply was made: nothing went out)
         log.exception("morning note")
         return "refused", {"how": "failed", "why": "the morning's thought could not be said (it broke)"}

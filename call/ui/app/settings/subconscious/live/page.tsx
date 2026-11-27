@@ -113,7 +113,7 @@ export default function LivePage() {
   const labels = useRef<Map<string, HTMLElement>>(new Map());
   const stage = useRef<HTMLDivElement>(null);
   const timers = useRef<number[]>([]);
-  const glows = useRef<Map<string, number[]>>(new Map()); // each name's own light, on and off
+  const glows = useRef<Map<string, { on: number[]; off: number[] }>>(new Map()); // each name's own lights, on and off
   const queueEnd = useRef(0);
   const played = useRef<Map<string, Set<string>> | null>(null);
   const losses = useRef<number[]>([]);
@@ -259,14 +259,17 @@ export default function LivePage() {
   );
 
   // A region's name lights with it (and goes back), so a light is read in words too.
+  // A light of this region still to come stays: only the end of the one before moves. When the steps' timers run
+  // late and together (a busy computer), a region's second light would otherwise cancel its first before it shows.
   const glow = useCallback((id: string, state: string, after: number) => {
     const el = labels.current.get(id);
     if (!el) return;
-    for (const t of glows.current.get(id) ?? []) clearTimeout(t);
-    glows.current.set(id, [
-      window.setTimeout(() => (el.dataset.lit = state), after),
-      window.setTimeout(() => delete el.dataset.lit, after + GLOW * 1000),
-    ]);
+    const had = glows.current.get(id) ?? { on: [], off: [] };
+    for (const t of had.off) clearTimeout(t);
+    glows.current.set(id, {
+      on: [...had.on.slice(-8), window.setTimeout(() => (el.dataset.lit = state), after)],
+      off: [window.setTimeout(() => delete el.dataset.lit, after + GLOW * 1000)],
+    });
   }, []);
 
   // One step shown: its signals run along their wires, and the region lights as they arrive. A region switched off
@@ -338,7 +341,8 @@ export default function LivePage() {
       stop();
       live.current.lit.clear();
       live.current.pulses = [];
-      for (const list of glows.current.values()) for (const t of list) clearTimeout(t);
+      for (const { on, off } of glows.current.values())
+        for (const t of [...on, ...off]) clearTimeout(t);
       glows.current.clear();
       for (const el of labels.current.values()) delete el.dataset.lit;
       setFlatLit({});

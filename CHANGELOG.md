@@ -2,6 +2,60 @@
 
 What changed for people who use Viventium AI, one entry per public release, newest first.
 
+## 0.5.0 experimental · release 56 · 27 November 2026
+
+- Continuous awareness now comes alive the way a close friend would, not only when something is owed. With nothing
+  pending, the first moment of your morning can be a hello of its own, and after a long quiet day it may reach out.
+  It still gives you room: right after you talked, while work runs, when you are busy, or when its last words went
+  unanswered. Checked on the same mind (GPT-6.1 Sol), old words against new: a word after a long quiet day 10 of 10
+  (0 of 10 before), room given every time (as before), promised check-ins and retries as before, and a promise made
+  further back in the conversation is now taken up. A morning hello with nothing pending: 20 of 20 with Feelings on
+  (0 before), because a check-in now chooses with how it feels, as its words ask. With Feelings off it comes less
+  often.
+- What a check-in sees now includes, from its own records: work that ended lately and was told to you (what was asked
+  and how it ended), and whether the last words between you were its own. On Grok, it now leaves work it already
+  finished for you alone far more often, instead of coming back to it.
+- A check-in is decided and written by the mind answering you. While your chosen mind is in place, it alone is asked,
+  and it is waited for up to 30 seconds, since nobody is waiting on a check-in; it is never handed to the backup on
+  your Mac. While the backup answers your turns, it decides the check-in too, and the check-in's record names the mind
+  that decided it.
+- A check-in that chose to say something is told what that message can do: what it sees is its look around, and the
+  message uses no tool. Before, on Grok, it could say it would look around first, a look it could not take.
+- A check-in whose reply came back empty from your chosen mind (no word in its wait) is asked once more at once, fresh,
+  of the same mind. Before, that moment passed in silence. If it is empty again, the check-in passes and says so ("its
+  reply was empty twice"), and the next one may try again. It is never handed to the backup on your Mac while your
+  chosen mind is in place. Checked with stand-in minds on both ways a check-in decides: empty then words, it speaks;
+  empty twice, it passes after the second ask; your own words meanwhile, it is not asked again; staying quiet by
+  choice is never asked again.
+- When Deep memory or recall finds a summary of an earlier conversation, Viventium is now also shown what came of it:
+  what was decided, what was promised and what was found or suggested there, as it stands after your corrections and
+  forgets. Before, it was shown only the part that matched your words, often what you had asked for back then, so it
+  could say an earlier list "does not name the places" when the places were in it. Checked without a model, on a real
+  request and its memory: the earlier list now reaches recall every time it is asked for (once in six before), and
+  Deep memory names it on Grok on your subscription five times out of five (never before). Everyday turns are shown
+  exactly what they were.
+- What Viventium suggested in a conversation no longer reaches its standing knowledge of you as if you had said it,
+  whichever way the summary writes its sections. Checked on a real set of summaries: only Viventium's own suggestions
+  moved out, and nothing you said, decided or stated was lost.
+- When Viventium's chosen mind takes your message and then ends with nothing at all, no words and no action, that no
+  longer ends in silence. It goes as a request that hung goes: on a typed or Telegram message the mind is asked once
+  more, fresh, and the backup answers if it still has nothing; on a call the backup answers; and if no mind answers,
+  you are told plainly that Viventium's mind did not answer. A silence Viventium chooses stays silent, and a reply
+  stopped because the work already started is not treated as a failure. Checked without a model on Telegram and on a
+  call: before, such a reply left nothing at all; now it is answered or you are told. This guards against a case
+  first seen in a test run, before it can reach you.
+- Live, the brain view, now shows every light of a turn when the computer is busy. A part that lit twice in quick
+  succession could lose its first light, so Coordinator or Conscious mind sometimes lit once where the turn had them
+  twice. Checked without a model, with the page's own clock held and every step then run at once: before, those first
+  lights were lost every time; now each shows.
+- Known limits:
+  - On minds that make a check-in's choice in one word, such as Grok on your subscription and the model on your Mac,
+    a check-in can say something or stay quiet but does not yet start work it promised you. On GPT-6.1 Sol it can.
+  - On Grok, after you call off something it had promised, a later check-in may still mention it lightly. It does not
+    take it up again.
+  - On Grok, after it offered you something and you have not answered yet, the next check-in may speak again before
+    you do.
+
 ## 0.5.0 experimental · release 55 · 27 November 2026
 
 - Viventium's marker for "start a new message here" no longer shows up in your messages. It was split only when it

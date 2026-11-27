@@ -73,6 +73,8 @@ QUERY = 6000  # characters searched as one (about 1,500 tokens; its server reads
 TURN_WAIT = float(os.environ.get("MEMORY_TURN_WAIT", "0.8"))
 TURN_ASK = 5.0  # seconds the per-turn request itself may take: never hung up at her turn's wait (it finishes, warm)
 MEANING_ROOM = 400  # characters of a passage found by meaning in her search (its section and corrections kept whole)
+ANSWER_ROOM = 900  # characters a found conversation summary may add: what came of it (life.answer_lines), at most
+ANSWERED_FILES = 3  # summaries found by words whose answering parts recall adds, at most (with ANSWER_ROOM each)
 NEAR = float(os.environ.get("MEMORY_NEAR", "0.60"))        # per turn: how alike a passage must be to be shown
 DEEP_NEAR = float(os.environ.get("MEMORY_DEEP_NEAR", "0.40"))  # Deep Memory: candidates; a model then weighs them
 _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="memory")
@@ -379,6 +381,16 @@ def _stale() -> bool:
         return False
 
 
+def answers(path: str, shown_from: int = 0, shown_to: int = -1, room: int = ANSWER_ROOM,
+            changes: list[dict] | None = None) -> str:
+    """What came of the conversation a find is in, beside the passage that matched: a summary's answering parts
+    (life.answer_lines: what was decided, promised and found in it) outside the lines already shown (shown_from to
+    shown_to), as whole lines within room; "" for any other file, or when nothing more answers. The passage that
+    matches a request is often its Goals: the places found were under the parts that answer."""
+    lines = [(n, text) for n, text in life.answer_lines(path, changes) if not shown_from <= n <= shown_to]
+    return life.whole_lines("\n".join(text for _, text in lines), room) if lines and room > 0 else ""
+
+
 def shown(path: str, line: int, text: str, room: int) -> str:
     """A passage found by meaning as she is shown it: the section it starts under (heard nearby is never shown as his),
     then its lines within `room`, each correction and mark whole (core/life.whole_lines)."""
@@ -481,12 +493,32 @@ def _deep(talk: list[tuple[str, str]], seen: tuple[str, ...], limit: int, each: 
         body = shown(path, line, text, each - len(where) - 3)
         if not body:
             continue
+        try:  # (what came of it, when the find is in a conversation summary: its own room, beside the passage)
+            more = answers(path, line, line + text.count("\n"))
+        except life.Unreadable:
+            more = ""
         files.add(path)
         found.append({"path": path, "line": line, "source": where,
-                      "text": f"({where}) " + body, "score": round(score, 3)})
+                      "text": f"({where}) " + body + (f"\n…\n{more}" if more else ""), "score": round(score, 3)})
         if len(found) == limit:
             break
     return Near(found)
+
+
+def _with_answers(hits: list[dict]) -> None:
+    """Her word search's hits that are conversation summaries (the first ANSWERED_FILES of them): each with what came of
+    it among its lines (answers), its matched lines first kept, in file order, within ANSWER_ROOM."""
+    for hit in [h for h in hits if life.kind_of(h.get("path", "")) == "summary"][:ANSWERED_FILES]:
+        have, room, extra = {n for n, _ in hit.get("lines") or []}, ANSWER_ROOM, []
+        for n, text in life.answer_lines(hit["path"]):
+            if n in have:
+                continue
+            if len(text) + 1 > room:
+                break
+            extra.append((n, text))
+            room -= len(text) + 1
+        if extra:
+            hit["lines"] = sorted([*hit.get("lines", []), *extra])
 
 
 def search(words: str, only: tuple[str, ...] = ()) -> str:
@@ -508,6 +540,7 @@ def _search(words: str, within: tuple[str, ...]) -> str:
     issues: set[str] = set()
     try:
         hits, matched = life.search_hits(words, only=within, issues=issues)
+        _with_answers(hits)
         seen = {hit["path"] for hit in hits}
         meaning = nearest(words, k=6, under=within, timeout=2.0)
         near = [hit for hit in meaning if hit[1] not in seen][:3]
@@ -522,7 +555,8 @@ def _search(words: str, within: tuple[str, ...]) -> str:
     def recalled(path, line, text):
         label = life.section_at(life._file_lines(path) or [], line, path)
         room = max(MEANING_ROOM, len(text) + len(label) + 12) if life.FIX in text or life.FIX in label else MEANING_ROOM
-        return shown(path, line, text, room)
+        more = answers(path, line, line + text.count("\n"))  # (what came of it, when it is a conversation summary)
+        return shown(path, line, text, room) + (f"\n…\n{more}" if more else "")
     by_meaning = "\n\n".join(f"[{life.name_of(path)}] {life.cite(path, her=True)}\n{recalled(path, line, text)}"
                                for _, path, line, text in near)  # (a summary by its date and short id: life.name_of)
     notice = life.search_notice(issues, bool(hits))

@@ -1230,8 +1230,13 @@ def _core_text(sections: dict[str, str], head: str = "") -> str:
 def _users_part(summary: str) -> str:
     """A conversation summary without its "Assistant …" sections (Light's own summary format, below):
     what she said or offered once must not become who she is (a refusal to send a voice note had become
-    a standing rule in her core view, and she then refused every voice note)."""
-    return re.sub(r"(?ms)^#{2,4} Assistant[^\n]*\n.*?(?=^#{1,4} |\Z)", "", summary)
+    a standing rule in her core view, and she then refused every voice note). Its sections as headings ("## …"), and
+    as the summary model also writes them, a title alone on its line ("**Assistant suggestions**": summary_spans);
+    before, only the headings were taken out, and her offers in the other form reached her standing view of him."""
+    text = re.sub(r"(?ms)^#{2,4} Assistant[^\n]*\n.*?(?=^#{1,4} |\Z)", "", summary)
+    every = text.split("\n")
+    hers = {n for first, last, title in summary_spans(every) if title in SUMMARY_HERS for n in range(first, last + 1)}
+    return "\n".join(line for n, line in enumerate(every, 1) if n not in hers) if hers else text
 
 
 def _now_text(path: Path, root: Path, changes: list[dict]) -> str:
@@ -2412,6 +2417,61 @@ def part_left(line: str) -> str:
     m = ANNOTATION.match(line)
     at = m.end() if m else len(LEAD.match(line).group(0))
     return f"{line[:at]}{PART_LEFT_OUT} {line[at:]}"
+
+
+# Light's own conversation summary: its sections, as its model is asked for them (_summary_body), in order. A section
+# begins with a line that is its title alone: "## Decisions", "**Decisions**" or "Decisions:" (the model writes any).
+SUMMARY_SECTIONS = ("Goals", "Decisions", "Commitments", "Corrections", "Facts the user stated", "Assistant suggestions",
+                    "Unresolved questions", "Sensitivity", "Confidence")
+# The parts of one that say what came of that conversation: what was decided, promised, and found or offered in it.
+SUMMARY_ANSWERS = ("Decisions", "Commitments", "Assistant suggestions")
+# The parts that are Viventium's own words: what she said or offered is never who the user is (_users_part).
+SUMMARY_HERS = ("Assistant suggestions",)
+_TITLE_LINE = re.compile(r"^ {0,3}(?:#{1,4}[ \t]*)?(?:\*\*)?([A-Za-z][A-Za-z ]{1,40}?)(?:\*\*)?[ \t]*:?[ \t]*(?:\*\*)?[ \t]*$")
+
+
+def summary_titles(every: list[str]) -> list[tuple[int, str]]:
+    """Where each of Light's summary sections begins in a summary's lines: (line, its title), in file order. Only
+    those titles, each alone on its line; a summary in another format has none."""
+    known = {title.lower(): title for title in SUMMARY_SECTIONS}
+    found = []
+    for n, line in enumerate(every, 1):
+        title = (m.group(1).strip().lower() if (m := _TITLE_LINE.match(line)) else "")
+        if title in known:
+            found.append((n, known[title]))
+    return found
+
+
+def summary_spans(every: list[str]) -> list[tuple[int, int, str]]:
+    """Each of Light's summary sections in a summary's lines: (its title's line, its last line, its title), a section
+    ending before the next section's title or the next heading (a long conversation's parts each have their own)."""
+    starts = summary_titles(every)
+    ends = sorted({n for n, _ in starts} | {n for n, line in enumerate(every, 1) if HEADING.match(line)})
+    return [(first, next((e for e in ends if e > first), len(every) + 1) - 1, title) for first, title in starts]
+
+
+def answer_lines(rel: str, changes: list[dict] | None = None) -> list[tuple[int, str]]:
+    """What came of a conversation, from its summary: the lines of its answering sections (SUMMARY_ANSWERS), each
+    section from its title to the line before the next section, as they stand now by the change list (a forgotten line
+    gone, a corrected one in its words now), blank lines left out. [] for any other file, a summary in another format,
+    or one forgotten whole. Raises Unreadable, as current does."""
+    if kind_of(rel) != "summary" or source(rel).get("unreadable"):
+        return []
+    changes = in_force() if changes is None else changes
+    if rel in skipped(changes):
+        return []
+    every = _file_lines(rel) or []
+    out = []
+    for first, last, title in summary_spans(every):
+        if title not in SUMMARY_ANSWERS:
+            continue
+        body = [every[n - 1].strip(" -*\t.").lower() for n in range(first + 1, last + 1) if every[n - 1].strip()]
+        if not body or body == ["none"]:  # (its format's word for an empty section: nothing came of it there)
+            continue
+        for n in range(first, last + 1):
+            if every[n - 1].strip() and (now := current(every[n - 1], 0.0, changes, rel, first=n)).strip():
+                out.append((n, now))
+    return out
 
 
 def section_at(every: list[str], n: int, path: str = "", changes: list[dict] | None = None) -> str:
