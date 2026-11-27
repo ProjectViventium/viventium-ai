@@ -1,0 +1,2572 @@
+#!/usr/bin/env bash
+# Viventium AI: one command to talk to her.
+#   ./vx up [local|hybrid|cloud]  start her and open the call page (no profile: the one she last ran; local
+#                           the first time). The first run installs what this Mac is missing; a cloud
+#                           profile asks once for any key it needs
+#   ./vx telegram           talk on Telegram too: connect your own bot (asks for its token once)
+#   ./vx down               stop everything this project started
+#   ./vx restart [profile]  down, then up (checked first: nothing stops if the profile cannot start)
+#   ./vx ready [profile]    can this profile start here? Says what is missing; changes nothing
+#   ./vx preflight [profile]  assess memory and free space before any sign-in
+#   ./vx status             what is running
+#   ./vx doctor             what is wrong, in plain words, and what to do about it
+#   ./vx backup             keep what makes her yours (state and private settings) outside this folder, checked;
+#                           ./vx restore [name] puts one back (./vx backup list shows them)
+#   ./vx install NAME       get a model or tool this Mac lacks (what "Install" on the settings page does)
+#   ./vx autostart on|off   start her at login; any part that stops comes back within 2 minutes
+#   ./vx menubar on|off     her mark in the menu bar (on unless switched off): her ears, eyes, Wing, Listen, where she runs
+#   ./vx subscriptions [name] the subscriptions this Mac can sign in to, or one's own sign-in started (the app's logos)
+#   ./vx app                the app "Viventium AI" in Applications, made new if its source changed (./vx up does too)
+#   ./vx test [scenario|all] real-browser call tests (synthetic voice); flags double speech, latencies
+#   ./vx test-telegram      the Telegram channel end to end (scripted incoming messages, real replies)
+#   ./vx test-sound         her voice's laughs, sighs and gasps, measured on the profile's own voice
+#   ./vx sounds             keep checked laughs, sighs and gasps for the profile's voice (another TTS_VOICE)
+#   ./vx samples [voice]    record each voice saying one line, for the settings page's play buttons
+#   ./vx scorecard          the product metric, measured (quality, performance, activation, secure)
+set -euo pipefail
+clean_start() {  # her parts start from what a fresh login gives them, whoever runs this: a terminal, an AI session,
+  # a script. Only these names pass, and the VX_* and LIFE a caller sets on purpose; her own settings come from her
+  # profile and the Keychain. (Otherwise a calling session's CLAUDECODE, CLAUDE_CODE_*, CODEX_* and ANTHROPIC_BASE_URL,
+  # or a test's dead EMBED_URL, reach her agent and xPerfect through a ./vx restart run from inside it.)
+  [ -n "${VX_CLEAN_ENV:-}" ] && return 0
+  local keep=(VX_CLEAN_ENV=1) name
+  for name in HOME USER LOGNAME SHELL TMPDIR LANG LC_ALL LC_CTYPE TERM PATH; do
+    [ -n "${!name:-}" ] && keep+=("$name=${!name}")
+  done
+  for name in $(compgen -e); do
+    case "$name" in VX_*|LIFE) keep+=("$name=${!name}") ;; esac
+  done
+  exec env -i "${keep[@]}" "$BASH" "$0" "$@"
+}
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then clean_start "$@"; fi  # (run as a command; a script that sources vx for its parts
+#  keeps its own environment)
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+LOGS="$ROOT/logs"; mkdir -p -m 700 "$LOGS"  # (her logs are his alone: core/state.py)
+RELEASE=""
+[ ! -s "$ROOT/.vx-release" ] || RELEASE=$(cat "$ROOT/.vx-release")
+unset LK_KEY LK_SECRET PHONE_SECRET  # (Light's own secrets: read from the Keychain by this run, never inherited)
+export PATH="$ROOT/tools/grok-build:$ROOT/tools/harnesses/bin:$ROOT/tools/node_modules/.bin:$PATH"  # (this project's CLIs)
+# Keep established developer paths. A stock Mac must find Homebrew before Apple's installer stubs.
+if ! xcode-select -p >/dev/null 2>&1; then
+  export PATH="$ROOT/tools/grok-build:$ROOT/tools/harnesses/bin:$ROOT/tools/node_modules/.bin:$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:$PATH"
+fi
+BOOT=$(sysctl -n kern.boottime | sed -E 's/^[{] sec = ([0-9]+).*/\1/')  # a pid or lock from before it is stale
+UI_PORT=3400
+# Light's own Ollama for its private model servers (the system one, shared with Viventium, is left
+# alone). 0.40 runs qwen3.6 about twice as fast to the first word as 0.31, and runs Qwen3.8.
+OLLAMA_VERSION=0.40.15
+OLLAMA_BIN="$HOME/.cache/viventium-light/ollama-$OLLAMA_VERSION/ollama"
+
+xp_ports() {  # xp_ports STATE [api|ui|mcp]: an xPerfect state's own ports, so two can run side by side
+  local api=8866 ui=8880 mcp=8867
+  case "$1" in *state-local) api=8876; ui=8890; mcp=8877 ;; esac  # (the Workers on this Mac)
+  case "${2:-}" in api) echo $api ;; ui) echo $ui ;; mcp) echo $mcp ;; *) echo "$api $ui $mcp" ;; esac
+}
+
+small_mac_profile() {
+  local bytes
+  bytes=$(sysctl -n hw.memsize 2>/dev/null) || return 0
+  case "$bytes" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$bytes" -gt 0 ] || return 0
+  local name memory setup model previous=small-8
+  while read -r name memory setup model; do
+    case "$name" in small-*|local) ;; *) continue ;; esac
+    if [ "$bytes" -lt $((memory * 1073741824)) ]; then echo "$previous"; return 0; fi
+    [ "$name" != local ] || return 0
+    previous=$name
+  done < "$ROOT/profiles/resources.tsv"
+}
+
+load_profile() {
+  if restore_pending; then
+    echo "An interrupted restore is pending. Start Viventium to recover it first."; exit 1
+  fi
+  local profile="${1:-local}" small
+  if [ "${3:-}" != running ]; then
+    small=$(small_mac_profile)
+    if [ -n "$small" ]; then profile="$small"
+    else case "$profile" in small-8|small-16|small-24) profile=local ;; esac; fi
+  fi
+  [ -f "$ROOT/profiles/$profile.env" ] || { echo "No profile: $profile (local, hybrid or cloud)"; exit 1; }
+  # (never left over from a profile loaded before: the first run promoted from Local to Hybrid sent her online
+  # mind to Local's own model server; a profile that names its own address or tier still sets it below)
+  unset WORKERS_LOCAL XPERFECT_LOCAL_STATE XPERFECT_LOCAL_API QUEEN_URL QUEEN_TIER
+  unset SMALL_MAC_TIER WORKERS_OPTIONAL LOCAL_CONTEXT MEMORY_EMBED MEMORY_CORTEX STT_AUTO TTS_FALLBACK
+  unset WORKER_GROK_SIGN_IN
+  unset QUEEN_FALLBACK_MODEL QUEEN_FALLBACK_URL MISSING_KEY
+  unset HELPERS HELPERS_OPENAI_URL HELPERS_OPENAI_API_KEY_ITEM
+  set -a; source "$ROOT/profiles/$profile.env"
+  # Private, untracked: this Mac's settings for every profile (e.g. LIFE=/path/to/Life), then the
+  # profile's own overrides (endpoints, key item names).
+  if [ -f "$ROOT/profiles/machine.local.env" ]; then source "$ROOT/profiles/machine.local.env"; fi
+  if [ -f "$ROOT/profiles/$profile.local.env" ]; then source "$ROOT/profiles/$profile.local.env"; fi
+  # Calling from the phone turned off in Settings over a line of your own (VX_PHONE=off): off, whatever a file says.
+  if [ "${VX_PHONE:-}" = off ]; then VX_LAN_ORIGIN="" VX_LAN_LIVEKIT_URL=""; fi
+  # Her memory of you: your Viventium Life folder, read in place (where main Viventium keeps it too).
+  LIFE="${LIFE:-$HOME/Documents/Viventium/Life}"
+  set +a
+  PROFILE="$profile"; export PROFILE
+  [ "${2:-}" = assess ] || stand_in
+  export XPERFECT_STATE="$ROOT/$XPERFECT_STATE"
+  export XPERFECT_API="http://127.0.0.1:$(xp_ports "$XPERFECT_STATE" api)"
+  export XCLOCK=on  # xPerfect keeps the time of her reminders (core/xclock.py; never from a test's own state)
+  # Workers on this Mac beside online ones (WORKERS_LOCAL=also|first, from the settings page): xPerfect runs a
+  # harness one way per instance, so theirs is a second xPerfect, on its own ports (brain/xperfect.py).
+  if [ "${WORKERS:-}" = signed-in ] && [ -n "${WORKERS_LOCAL:-}" ]; then
+    export XPERFECT_LOCAL_STATE="$ROOT/brain/state-local"
+    export XPERFECT_LOCAL_API="http://127.0.0.1:$(xp_ports "$XPERFECT_LOCAL_STATE" api)"
+  fi
+  case "${2:-}" in check|assess) ;; *) migrate_setup_marker; echo "$profile" > "$LOGS/profile" ;; esac
+}
+
+restore_pending() {  # only the affected state is gated; an unrelated marker is left untouched
+  local marker
+  for marker in "${VX_LOGS:-$LOGS}"/restore-in-progress*.json; do
+    if [ -e "$marker" ] || [ -L "$marker" ]; then
+      local code=0
+      (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup pending) || code=$?
+      [ "$code" != 1 ]; return  # a broken guard also keeps normal writers stopped
+    fi
+  done
+  return 1
+}
+
+KEYS="ASSEMBLYAI_API_KEY XAI_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY"
+key_item() {  # the Keychain item a key lives in: KEY_ITEM if set, else Viventium's own name for it
+  local item_var="${1}_ITEM"
+  echo "${!item_var:-viventium/$(echo "${1%_API_KEY}" | tr 'A-Z' 'a-z' | sed 's/^xai$/x_ai/')_api_key}"
+}
+
+load_keys() {  # Keys for the part about to use them: environment first, else the macOS Keychain
+  local key value
+  for key in $KEYS; do
+    if [[ " ${KEYS_OFF:-} " == *" $key "* ]] || [ -e "$LOGS/$key.off" ]; then unset "$key"; continue; fi
+    if [ -z "${!key:-}" ] && value=$(security find-generic-password -s "$(key_item "$key")" -w 2>/dev/null); then
+      export "$key=$value"
+    fi
+  done
+  load_helper_key
+}
+
+load_helper_key() {  # Keep an OpenAI helper's private endpoint and its key together, even with another mind.
+  local configured="${HELPERS:-}" pair=() line value
+  unset HELPERS_OPENAI_API_KEY
+  [[ ",${configured//[[:space:]]/}," == *,openai:*,* ]] || return 0
+  [[ " ${KEYS_OFF:-} " == *" OPENAI_API_KEY "* ]] && return 0
+  [ ! -e "$LOGS/OPENAI_API_KEY.off" ] || return 0
+  if [ -z "${HELPERS_OPENAI_URL:-}${HELPERS_OPENAI_API_KEY_ITEM:-}" ] && [ "${QUEEN:-}" != openai ] &&
+     { [ "${QUEEN_FALLBACK:-}" != openai ] || [ -z "${QUEEN_FALLBACK_URL:-}" ]; } &&
+     { [ -f "$ROOT/profiles/cloud.local.env" ] || [ -f "$ROOT/profiles/machine.local.env" ]; }; then
+    while IFS= read -r -d '' line; do pair+=("$line"); done < <(
+      unset QUEEN_URL OPENAI_API_KEY_ITEM
+      source "$ROOT/profiles/cloud.env" >/dev/null
+      if [ -f "$ROOT/profiles/machine.local.env" ]; then source "$ROOT/profiles/machine.local.env" >/dev/null; fi
+      if [ -f "$ROOT/profiles/cloud.local.env" ]; then source "$ROOT/profiles/cloud.local.env" >/dev/null; fi
+      if [ "${QUEEN:-}" = openai ] && [ -n "${QUEEN_URL:-}" ]; then
+        printf '%s\0%s\0' "$QUEEN_URL" "$(key_item OPENAI_API_KEY)"
+      fi
+    )
+    if [ "${#pair[@]}" -eq 2 ]; then
+      export HELPERS_OPENAI_URL="${pair[0]}" HELPERS_OPENAI_API_KEY_ITEM="${pair[1]}"
+    fi
+  fi
+  if [ -n "${HELPERS_OPENAI_API_KEY_ITEM:-}" ] &&
+     value=$(security find-generic-password -s "$HELPERS_OPENAI_API_KEY_ITEM" -w 2>/dev/null); then
+    export HELPERS_OPENAI_API_KEY="$value"
+  fi
+}
+
+mind_key() {  # the key her chosen online mind needs (none for this Mac's model); for your Grok subscription, Light's own
+  # sign-in (grok_mind: core/grok_sign_in), which stands where a key would: turned off the same way, its backup the same
+  case "${QUEEN:-}" in openai) echo OPENAI_API_KEY ;; anthropic) echo ANTHROPIC_API_KEY ;; xai) echo XAI_API_KEY ;;
+    xai_plan) echo grok_mind ;; chatgpt_plan) echo chatgpt_mind ;; *) return 1 ;; esac
+}
+
+have_key() {  # have_key NAME: Light has this key to use (environment or Keychain), and it is not one you turned off
+  [[ " ${KEYS_OFF:-} " == *" $1 "* ]] && return 1
+  [ ! -e "$LOGS/$1.off" ] || return 1
+  if [ "$1" = grok_mind ]; then  # (Light's own sign-in: its Keychain item, read whole by core/grok_sign_in, never in the
+    # environment; a test's stand-ins of xAI get a stand-in item of their own; the page's own switch off wins)
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.grok_sign_in status) >/dev/null 2>&1; return
+  fi
+  if [ "$1" = chatgpt_mind ]; then
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -c 'from core.chatgpt_sign_in import connection; raise SystemExit(connection.status()["state"] not in ("connected", "limited", "unavailable", "refresh_unavailable", "unauthorized"))') >/dev/null 2>&1
+    return
+  fi
+  [ -n "${!1:-}" ] || security find-generic-password -s "$(key_item "$1")" >/dev/null 2>&1
+}
+
+stand_in() {  # on a profile whose online parts may start on their declared backup (MISSING_KEY=backup: Hybrid, so one
+  # subscription is enough), a mind whose key this Mac lacks (or that you turned off) runs as Local runs it, on
+  # this Mac, warm on its own server (QUEEN_FALLBACK=local: the local profile's mind, as you set it there). Her voice's
+  # backup speaks by itself (speech/factory.py) and her quick helpers fall back to this Mac (core/helpers.py). Nothing is
+  # asked; Settings says what answers now. With the key, nothing changes.
+  [ "${MISSING_KEY:-}" = backup ] && [ "${QUEEN_FALLBACK:-}" = local ] || return 0
+  local key mind; key=$(mind_key) || return 0
+  have_key "$key" && return 0
+  mind=$(set -a; for f in "$ROOT/profiles/local.env" "$ROOT/profiles/machine.local.env" "$ROOT/profiles/local.local.env"; do
+           if [ -f "$f" ]; then . "$f"; fi; done
+         printf 'QUEEN=%q QUEEN_MODEL=%q QUEEN_URL=%q QUEEN_EFFORT=%q' "$QUEEN" "$QUEEN_MODEL" "${QUEEN_URL:-}" "${QUEEN_EFFORT:-}")
+  eval "export $mind"
+}
+
+ask_keys() {  # each cloud key this profile uses and this Mac lacks: asked for once, kept in the Keychain
+  local key name url keys=""
+  if [ "$STT" = assemblyai ]; then keys="$keys ASSEMBLYAI_API_KEY"; fi
+  if [ "$STT" = xai ]; then keys="$keys XAI_API_KEY"; fi
+  if [ "$STT" = openai ] || [ "$TTS" = openai ]; then keys="$keys OPENAI_API_KEY"; fi
+  # (a voice with a declared backup on this Mac, on a profile that lets it stand in: that backup speaks, nothing is asked)
+  if [ "$TTS" = xai ] && { [ "${MISSING_KEY:-}" != backup ] || [ "${TTS_FALLBACK:-}" != mlx_local ]; }; then keys="$keys XAI_API_KEY"; fi
+  if [ "$QUEEN" = xai ]; then keys="$keys XAI_API_KEY"; fi
+  case "$QUEEN" in openai) keys="$keys OPENAI_API_KEY" ;; anthropic) keys="$keys ANTHROPIC_API_KEY" ;; esac
+  # Her mind on your Grok subscription: Light's own sign-in, made once in your browser (no key to paste). On a profile
+  # that lets its backup stand in (stand_in), nothing is asked: her backup answers until you sign in (Settings, System).
+  if [ -z "${SMALL_MAC_TIER:-}" ] && [ "$QUEEN" = xai_plan ] && [[ " ${KEYS_OFF:-} " != *" grok_mind "* ]] && [ ! -e "$LOGS/grok_mind.off" ] && ! have_key grok_mind; then
+    if [ ! -t 0 ]; then
+      if [ -n "${VX_FROM_APP:-}" ]; then echo "$(place_name) needs your Grok sign-in. Sign in in Settings, or choose Local or Hybrid."; blocked signin
+      else echo "The $PROFILE profile uses your Grok subscription. Run ./vx up $PROFILE in a terminal once to sign in."; fi
+      exit 1
+    fi
+    echo "The $PROFILE profile uses your Grok subscription for its mind. Sign in once in your browser (kept only in this Mac's Keychain)."
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.grok_sign_in login) || exit 1
+  fi
+  for key in $keys; do
+    if [[ " ${KEYS_OFF:-} " == *" $key "* ]] || [ -e "$LOGS/$key.off" ]; then continue; fi
+    if [ -n "${!key:-}" ] || security find-generic-password -s "$(key_item "$key")" >/dev/null 2>&1; then continue; fi
+    if [ -n "${SMALL_MAC_TIER:-}" ] && [ "${QUEEN_FALLBACK:-}" = openai ] \
+        && [ "$key" = "$(mind_key)" ]; then
+      if have_key OPENAI_API_KEY; then continue; fi
+      if [ -n "${VX_FROM_APP:-}" ]; then
+        echo "The current mind needs its key. Add an OpenAI key to use the backup."
+        blocked small-key; exit 1
+      fi
+    fi
+    case $key in
+      ASSEMBLYAI_API_KEY) name=AssemblyAI url=https://www.assemblyai.com/dashboard/api-keys ;;
+      XAI_API_KEY) name=xAI url=https://console.x.ai ;;
+      OPENAI_API_KEY) name=OpenAI url=https://platform.openai.com/api-keys ;;
+      ANTHROPIC_API_KEY) name=Anthropic url=https://console.anthropic.com/settings/keys ;;
+    esac
+    if [ ! -t 0 ]; then
+      if [ -n "${VX_FROM_APP:-}" ]; then echo "$(place_name) needs your $name key. Add it in Settings, or choose Local or Hybrid."; blocked key
+      else echo "The $PROFILE profile needs your $name key ($url). Run ./vx up $PROFILE in a terminal once to add it."; fi
+      exit 1
+    fi
+    echo "The $PROFILE profile uses $name. Get a key at $url and paste it below, twice (hidden; kept only in this Mac's Keychain)."
+    security add-generic-password -U -s "$(key_item "$key")" -a viventium-light -w || exit 1
+  done
+}
+
+require_small_mac_sign_in() {
+  [ -n "${SMALL_MAC_TIER:-}" ] && [ "$QUEEN" = xai_plan ] || return 0
+  have_key grok_mind && return 0
+  if [ "${QUEEN_FALLBACK:-}" = openai ] && have_key OPENAI_API_KEY; then return 0; fi
+  # When explicitly turned off after setup, open Settings so the person can turn it on.
+  if [ -f "$LOGS/.setup-done" ] && { [ -e "$LOGS/grok_mind.off" ] || [[ " ${KEYS_OFF:-} " == *" grok_mind "* ]]; }; then return 0; fi
+  if [ -t 0 ] && [ -z "${VX_FROM_APP:-}" ]; then
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.grok_sign_in login)
+    return
+  fi
+  echo "Sign in to Grok to start."
+  if [ -n "${VX_FROM_APP:-}" ]; then blocked small-signin "$SMALL_MAC_TIER"; fi
+  return 1
+}
+
+sign_in() {  # cloud Workers run on your own sign-ins (your Claude, ChatGPT or Grok plan), and one is enough:
+  # the first of the ones this profile names (WORKER_PROFILE, then WORKER_FALLBACK, in order) that is signed in does the
+  # work, and manages it unless the manager you chose is signed in itself. The order you chose comes back by itself at
+  # the next start once the first is signed in.
+  unset WORKER_SIGN_IN_REQUIRED
+  [ "${WORKERS:-}" = signed-in ] || return 0
+  local named other ready="" fallback="${WORKER_FALLBACK:-}" grok=""
+  unset WORKER_GROK_SIGN_IN
+  if have_key grok_mind; then grok=grok-build; export WORKER_GROK_SIGN_IN=1; fi
+  named=$(printf '%s\n' "$WORKER_PROFILE" ${fallback//,/ } "$grok" |
+    awk -v grok="$grok" 'NF && ($0 != "grok-build" || grok != "") && !seen[$0]++')
+  for other in $named; do
+    if [ "$other" = "$grok" ] || signed_in_now "$other"; then ready=$other; break; fi
+  done
+  if [ -z "$ready" ] && [ "${WORKERS_OPTIONAL:-}" = 1 ]; then
+    export WORKER_SIGN_IN_REQUIRED=1
+    return 0
+  fi
+  if [ "$ready" = grok-build ] && [ "${WORKERS_OPTIONAL:-}" = 1 ]; then
+    # On a Grok-only install, the absent plans are not fallback routes.
+    named=$(for other in $named; do
+      if [ "$other" = "$grok" ] || signed_in_now "$other"; then echo "$other"; fi
+    done)
+  fi
+  if [ -n "$ready" ] && [ "$ready" != "$WORKER_PROFILE" ]; then
+    WORKER_PROFILE=$ready; export WORKER_PROFILE
+    echo "  workers: on your $(harness_name "$ready") sign-in"
+  fi
+  if [ -n "$ready" ]; then
+    WORKER_FALLBACK=$(printf '%s\n' $named | awk -v r="$ready" '$0 != r' | paste -sd , -)
+    export WORKER_FALLBACK
+  fi
+  if [ -n "${MANAGER_PROFILE:-}" ] && [ "$MANAGER_PROFILE" != "$WORKER_PROFILE" ] && ! signed_in_now "$MANAGER_PROFILE"; then
+    export MANAGER_PROFILE=""  # (unset: the first Worker's harness manages)
+  fi
+  signed_in "$WORKER_PROFILE" first
+  fallback="${WORKER_FALLBACK:-}"
+  for other in ${fallback//,/ }; do
+    if [ "$other" != "$WORKER_PROFILE" ]; then signed_in "$other" backup; fi
+  done
+}
+
+harness_name() { case "$1" in claude-code) echo Claude ;; grok-build) echo Grok ;; *) echo ChatGPT ;; esac; }  # (as Settings names them)
+
+signed_in_now() {  # signed_in_now HARNESS: its own tool says it is signed in (nothing is said or asked)
+  case "$1" in
+    claude-code) claude auth status >/dev/null 2>&1 ;;
+    grok-build) have_key grok_mind ;;
+    codex-cli) codex login status >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+place_name() { echo "$PROFILE" | awk '{print toupper(substr($0, 1, 1)) substr($0, 2)}'; }  # (Local, Hybrid, Cloud)
+
+blocked() {  # blocked KIND [AMOUNT]: why this start stopped, for the app to show its one way forward (logs/blocked, one
+  # line: chip, memory GB, disk GB, signin, key, held, terminal, offline, or mind and what happened to it: mind_answers);
+  # every start begins without one. Never fails.
+  echo "$*" >"$LOGS/blocked" 2>/dev/null || true
+}
+
+signed_in() {  # signed_in HARNESS first|backup: the first choice must be signed in; a missing backup is only said
+  local login="codex login" name=Codex cli=codex
+  case "$1" in
+    claude-code) login="claude auth login" name="Claude" cli=claude ;;
+    grok-build)
+      if have_key grok_mind; then return 0; fi
+      if [ "$2" = backup ]; then return 0; fi
+      echo "Sign in to Grok in Viventium AI to use its Worker."; blocked signin; exit 1 ;;
+  esac
+  if signed_in_now "$1"; then return 0; fi
+  if [ "$2" = backup ]; then echo "  note: her Workers' backup, $name, is not signed in. Run '$login' once so it can take over."; return 0; fi
+  if ! "$cli" --version >/dev/null 2>&1; then  # installed but not runnable is not a sign-in problem
+    echo "$name is installed but can't run on this Mac right now ($(command -v "$cli" || echo "$cli")). If it came with an"
+    echo "app (ChatGPT ships Codex), reopen or update that app; or set WORKER_PROFILE in profiles/$PROFILE.env."; exit 1
+  fi
+  if [ ! -t 0 ]; then
+    if [ -n "${VX_FROM_APP:-}" ]; then  # (the app shows the sign-ins it can start, and starts her once one is made)
+      local fallback="${WORKER_FALLBACK:-}"
+      echo "$(place_name) needs your $(printf '%s\n' "$WORKER_PROFILE" ${fallback//,/ } | while read -r h; do harness_name "$h"; done \
+        | awk '!seen[$0]++' | paste -sd '|' - | sed 's/|/ or /g') sign-in."; blocked signin
+    else echo "Her Workers need your $name sign-in: run '$login' once."; fi
+    exit 1
+  fi
+  echo "Its Workers use your own $name sign-in. A browser opens once to sign in."
+  $login
+}
+
+model_present() {  # model_present NAME:TAG: in Ollama's model store on this Mac
+  [ -f "${OLLAMA_MODELS:-$HOME/.ollama/models}/manifests/registry.ollama.ai/library/${1%%:*}/${1##*:}" ]
+}
+
+local_voice() { [ "$TTS" = mlx_local ] || [ "${TTS_FALLBACK:-}" = mlx_local ]; }  # in use, or the declared backup
+
+small_voice() {
+  [ "${STT_AUTO:-}" = 1 ] && [ "$STT" = off ] || return 0
+  if have_key XAI_API_KEY; then export STT=xai TURN=stt
+  elif have_key OPENAI_API_KEY; then export STT=openai TURN=""; fi
+}
+
+preflight() {  # preflight [up]: before anything starts or downloads, can this Mac hold her local models?
+  local free model need name memory setup have mode=${1:-} model_gb=22 space="$LOGS/.space-asked.${PROFILE:-local}" legacy="$LOGS/.space-asked"
+  # (one plain line each, and why for the app: logs/blocked. Every profile counts here, since each runs the same
+  # model on this Mac as memory and as every online part's backup, and Hybrid on a subscription alone as her mind)
+  if { local_voice || [ -n "${SMALL_MAC_TIER:-}" ]; } && [ "$(uname -m)" != arm64 ]; then
+    echo "Viventium needs a Mac with Apple silicon (M1 or later)."; blocked chip; exit 1
+  fi
+  while read -r name memory setup model_gb; do
+    [ "$name" != "${PROFILE:-local}" ] || break
+  done < "$ROOT/profiles/resources.tsv"
+  [ "$name" = "${PROFILE:-local}" ] || { echo "No resource budget for this profile."; exit 1; }
+  have=$(sysctl -n hw.memsize 2>/dev/null) || have=""
+  case "$have" in ''|*[!0-9]*) ;; *)
+    if [ "$have" -gt 0 ] && [ "$have" -lt $((memory * 1073741824)) ]; then
+      echo "This profile needs $memory GB of memory."
+      if [ "${PROFILE:-local}" = small-8 ]; then echo "Use a Mac with Apple silicon and at least $memory GB of memory."
+      else echo "Run ./vx up to use this Mac's supported profile. Sign in or add a key in Settings, System if asked."; fi
+      blocked memory "$memory"; exit 1
+    fi ;;
+  esac
+  if [ -n "${SMALL_MAC_TIER:-}" ]; then
+    model="${MEMORY_MODEL:-}"
+  else
+    [ "$QUEEN" = ollama ] || [ "${WORKERS:-}" = local ] || [ -n "${WORKERS_LOCAL:-}" ] || [[ "${FEELINGS_URL:-}${MEMORY_URL:-}" == *:11436* ]] || return 0
+    model="$(grep -m1 '^model *=' "$ROOT/brain/codex-home-local/config.template.toml" | cut -d'"' -f2)"
+  fi
+  # The space is asked for once, before the first download (measured on a clean Mac: 22 GB for her model,
+  # 12 GB for the rest). A run that goes on after a dropped download already holds part of it, so it is not
+  # asked again (a retry with 30 to 34 GB free stopped before resuming); a disk that fills up
+  # meanwhile is told by the download that cannot finish (unfinished).
+  need=0
+  [ -f "$(setup_marker)" ] || need="$setup"
+  if [ -n "$model" ] && ! model_present "$model"; then need=$(( need + model_gb )); fi
+  if [ "$need" = 0 ]; then
+    rm -f "$space"
+    [ -n "${SMALL_MAC_TIER:-}" ] || rm -f "$legacy"
+    return 0
+  fi
+  [ -f "$space" ] && return 0
+  # Older builds shared this marker across full profiles, even before setup was complete.
+  if [ -z "${SMALL_MAC_TIER:-}" ] && [ -f "$legacy" ]; then return 0; fi
+  free=$(free_gb)
+  if [ "$free" -le "$need" ]; then
+    echo "Setting up needs about $(( need + 1 )) GB of free space. This Mac has $free GB: free up the rest and $(again)."
+    blocked disk $(( need + 1 )); exit 1
+  fi
+  # (only the run that goes on to download records it: ./vx ready asks, and a later start asks again)
+  [ "$mode" = up ] && touch "$space"
+  return 0
+}
+
+free_gb() { echo $(( $(df -k "$HOME" | awk 'NR==2 {print $4}') / 1048576 )); }
+
+again() {  # what goes on after a stop: the app tries again by itself or with its one button; a terminal runs vx again
+  if [ -n "${VX_FROM_APP:-}" ]; then echo "it goes on by itself"; else echo "run ./vx up again"; fi
+}
+
+online() {  # this Mac reaches the internet now (where her downloads come from): asked of two hosts, a few seconds each
+  curl -s -o /dev/null --max-time 6 -I https://huggingface.co 2>/dev/null || curl -s -o /dev/null --max-time 6 -I https://github.com 2>/dev/null
+}
+
+unfinished() {  # unfinished WHAT: a setup step or download did not finish. One plain line says what to do, never a
+  # traceback or a silent exit; every step goes on from what is already here when ./vx up runs again.
+  if [ "$(free_gb)" -lt 2 ]; then  # (how much the rest needs is not known here: 5 GB more free, and it goes on)
+    if [ -n "${VX_FROM_APP:-}" ]; then echo "  $1: this Mac's disk is full. Free up some space: it goes on by itself."
+    else echo "  $1: this Mac's disk is full. Free up some space and run ./vx up again: it goes on from where it stopped."; fi
+    blocked disk $(( $(free_gb) + 5 ))
+  elif ! online; then  # (no connection is a wait, not a failure; the app tries again by itself)
+    if [ -n "${VX_FROM_APP:-}" ]; then echo "  This Mac is not online. It goes on by itself once it is."
+    else echo "  $1 did not finish: this Mac is not online. Run ./vx up again once it is: it goes on from where it stopped."; fi
+    blocked offline
+  elif [ -n "${VX_FROM_APP:-}" ]; then
+    echo "  $1 did not finish. Try again: it goes on from where it stopped."
+  else
+    echo "  $1 did not finish (what happened: logs/setup.log). Run ./vx up again: it goes on from where it stopped."
+  fi
+  exit 1
+}
+
+sha256() {
+  [ -f "$1" ] && /usr/bin/openssl dgst -sha256 <"$1" | awk '{print $NF}'
+}
+
+fetch() {  # fetch FILE URL LABEL SHA256: keep the partial across attempts and restarts
+  local file=$1 partial="$1.part" before after rc status misses=0
+  if [ "$(sha256 "$file")" = "$4" ]; then return 0; fi
+  progress "$3"
+  mkdir -p "$(dirname "$file")"
+  while [ "$misses" -lt 4 ]; do
+    before=$(stat -f %z "$partial" 2>/dev/null || echo 0)
+    rc=0
+    # A fresh curl invocation recalculates the Range offset. Its built-in retry reuses the original offset.
+    status=$(curl -qfsSL --connect-timeout 15 --speed-limit 1 --speed-time "${VX_DOWNLOAD_STALL:-30}" \
+      -C - -o "$partial" -w '%{http_code}' "$2" 2>>"$LOGS/setup.log") || rc=$?
+    after=$(stat -f %z "$partial" 2>/dev/null || echo 0)
+    if [ "$rc" = 0 ] || { [ "$before" -gt 0 ] && { [ "$rc" = 33 ] || [ "$status" = 416 ]; }; }; then
+      if [ "$(sha256 "$partial")" = "$4" ]; then
+        mv -f "$partial" "$file"
+        return $?
+      fi
+      # A digest mismatch or a rejected range needs a clean start. Never install these bytes.
+      echo "Download did not verify: $(basename "$file") (curl $rc, HTTP $status)" >>"$LOGS/setup.log"
+      rm -f "$partial"
+      after=0
+    else
+      echo "Download interrupted: $(basename "$file") (curl $rc, HTTP $status, $after bytes kept)" >>"$LOGS/setup.log"
+    fi
+    [ "$(free_gb)" -ge 2 ] || break
+    if [ "$after" -gt "$before" ]; then misses=0; else misses=$(( misses + 1 )); fi
+    [ "$misses" -lt 4 ] && sleep $(( 2 ** misses ))
+  done
+  download_failed "$(basename "$file")"
+}
+
+download_failed() {
+  if [ -n "${VX_FROM_APP:-}" ] && [ "$(free_gb)" -ge 2 ]; then
+    echo "Download paused. Retrying…"
+    blocked download
+    exit 1
+  fi
+  unfinished "$1"
+}
+
+life_folder() {  # a Life folder that doesn't exist yet starts from main Viventium's template (never overwrites)
+  [ -f "$LIFE/AGENTS.md" ] && return 0
+  mkdir -p "$LIFE"; chmod 700 "$LIFE"; cp -Rn "$ROOT/life-template/" "$LIFE/" 2>/dev/null || true
+  if [ -f "$LIFE/AGENTS.md" ]; then echo "  life: your Life folder is $LIFE (her memory of you; yours to read and add to)"
+  else echo "  life: could not start a Life folder at $LIFE; she runs without memory of you"; fi
+}
+
+sound_check() {  # the AudioSet check her sound tests use (tools/soundcheck, ~0.8 GB once): installed when first needed
+  [ -x "$ROOT/tools/soundcheck/.venv/bin/python" ] && return 0
+  echo "  installing the sound check once (tools/soundcheck: an AudioSet classifier, about 0.8 GB)"
+  (cd "$ROOT/tools/soundcheck" && uv venv -q --python 3.12 .venv && uv pip install -q --python .venv/bin/python -r requirements.txt)
+}
+
+shared() {  # shared record|check: the real files behind the Codex and Claude CLIs main Viventium also uses.
+  # Light never changes them; it only records them and says loudly if one changed while it ran (a
+  # shared CLI can lose its execute bit, and the cause may never be known).
+  # A fresh Mac has neither program (there, the last test failing once ended ./vx up at once, with no
+  # word, under set -e), and the copies setup installs into Light's own tools/ are Light's, never main's: neither is
+  # flagged.
+  local rec="$LOGS/shared-programs.txt" now own was
+  own="$(cd "$ROOT" && pwd -P)/"
+  now="$(for name in codex claude; do for p in "$(command -v "$name" 2>/dev/null || true)" "$HOME/.local/bin/$name"; do
+           if [ -n "$p" ] && [ -e "$p" ]; then realpath "$p"; fi; done; done | sort -u | while read -r f; do
+           if [ "${f#"$own"}" = "$f" ]; then stat -f '%Lp %i %N' "$f"; fi; done)"  # (no case here: macOS bash 3.2 ends $( at its ")")
+  mkdir -p "$LOGS"
+  if [ "$1" = record ]; then printf '%s\n' "$now" > "$rec"; return 0; fi
+  [ -f "$rec" ] || return 0
+  # (an older record can hold Light's own tools: read it the same way, so an upgrade is not a change)
+  was="$(awk -v o=" $own" 'index($0, o) == 0' "$rec")"
+  [ "$now" = "$was" ] && return 0
+  echo "  !! A program main Viventium also uses changed while Light ran (Light leaves it as it is):"
+  diff <(printf '%s\n' "$was") <(printf '%s\n' "$now") | sed -n 's/^< /     was: /p; s/^> /     now: /p'
+  echo "     (mode, file id, path; a lost run permission comes back with: chmod 755 <path>)"
+  printf '%s changed:\n%s\n' "$(date '+%F %T')" "$now" >> "$LOGS/shared.log"
+  return 1
+}
+
+unload_keys() { unset ASSEMBLYAI_API_KEY XAI_API_KEY OPENAI_API_KEY HELPERS_OPENAI_API_KEY ANTHROPIC_API_KEY TELEGRAM_BOT_TOKEN; }
+
+own_secret() {  # own_secret ITEM MAKE: Light's own secret in the Keychain item ITEM (account viventium-light), made
+  # once by the Python expression MAKE and handed to security on its input, never its command line; prints what the
+  # Keychain kept ("" when it would not), read back so two starts at once agree
+  local value
+  value=$(security find-generic-password -s "$1" -a viventium-light -w 2>/dev/null || true)
+  if [ -z "$value" ]; then
+    value=$(python3 -c "import secrets; print($2)")
+    printf 'add-generic-password -s %s -a viventium-light -w %s\n' "$1" "$value" | security -i >/dev/null 2>&1 || true
+    value=$(security find-generic-password -s "$1" -a viventium-light -w 2>/dev/null || true)
+  fi
+  printf '%s' "$value"
+}
+
+livekit_keys() {  # Light's own LiveKit key, made once on this Mac and kept only in its Keychain: sets LK_KEY and LK_SECRET
+  # (not exported) for the three that use it, LiveKit, her agent and the call page, each given it in its environment
+  # (never a file, a log or a command line). Read once per run: a restart checks it before anything stops, and the
+  # rest of the run uses that checked pair. The published sample pair a profile may still name is dropped: without
+  # its own key, nothing of the call starts or stops.
+  unset LIVEKIT_API_KEY LIVEKIT_API_SECRET LIVEKIT_KEYS
+  [[ "${LK_KEY:-}:${LK_SECRET:-}" =~ ^[A-Za-z0-9]+:[A-Za-z0-9]{32,}$ ]] && return 0
+  local pair
+  pair=$(own_secret viventium-light/livekit '"light" + secrets.token_hex(4) + ":" + secrets.token_hex(32)')
+  if [[ ! "$pair" =~ ^[A-Za-z0-9]+:[A-Za-z0-9]{32,}$ ]]; then
+    echo "Viventium could not keep its call key in this Mac's Keychain. Unlock the Keychain (allow it if asked), then run ./vx up again."
+    exit 1
+  fi
+  LK_KEY="${pair%%:*}" LK_SECRET="${pair#*:}"
+}
+
+phone_key() {  # the secret his phone's pairing is signed with (call/ui/app/api/token/pairing.ts): made once and kept in
+  # the Keychain, only when calling from his phone is on (VX_LAN_ORIGIN); given to the page in its environment
+  PHONE_SECRET="${PHONE_SECRET:-}"
+  [ -n "${VX_LAN_ORIGIN:-}" ] && [ -z "$PHONE_SECRET" ] || return 0
+  PHONE_SECRET=$(own_secret viventium-light/phone-pairing 'secrets.token_hex(32)')
+  if [[ ! "$PHONE_SECRET" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Viventium could not keep the key that pairs your phone in this Mac's Keychain. Unlock the Keychain, then run ./vx up again."
+    exit 1
+  fi
+}
+
+own_folders() {  # her state and logs his alone (core/state.py), before anything of hers starts or stops: a folder that
+  # cannot be (a link, his home or Life, a disk that will not keep it) stops this run, the reason said just above
+  (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.state) && return 0
+  echo "  Viventium's own folders could not be made private, so nothing was started or stopped."; exit 1
+}
+
+key_proof() {  # before "Ready": LiveKit lets a token on Light's own key in, and the page signs its tokens with it
+  # (a part kept running from before could still hold another key). The secret goes in the environment only.
+  LK_KEY="$LK_KEY" LK_SECRET="$LK_SECRET" UI_PORT="$UI_PORT" LIVEKIT_URL="${LIVEKIT_URL:-ws://127.0.0.1:7880}" \
+    "$ROOT/.venv/bin/python" - <<'EOF'
+import json, os, sys, urllib.request
+import jwt
+from livekit import api
+key, secret = os.environ["LK_KEY"], os.environ["LK_SECRET"]
+server = "http" + os.environ["LIVEKIT_URL"].removeprefix("ws")
+page = f"http://127.0.0.1:{os.environ['UI_PORT']}"
+try:
+    token = api.AccessToken(key, secret).with_grants(api.VideoGrants(room_list=True)).to_jwt()
+    urllib.request.urlopen(urllib.request.Request(f"{server}/twirp/livekit.RoomService/ListRooms", data=b"{}",
+                           headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}), timeout=10)
+except Exception:
+    sys.exit("  the call server does not take Light's own key")
+try:
+    reply = urllib.request.urlopen(urllib.request.Request(f"{page}/api/token", data=b"{}", headers={
+        "Content-Type": "application/json", "Origin": page, "Sec-Fetch-Site": "same-origin"}), timeout=20)
+    jwt.decode(json.load(reply)["participantToken"], secret, algorithms=["HS256"], options={"verify_aud": False})
+except Exception:
+    sys.exit("  the call page does not sign calls with Light's own key")
+EOF
+}
+
+telegram_token() {  # Telegram bot token: environment first, else the Keychain item TELEGRAM_TOKEN_ITEM
+  if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] && value=$(security find-generic-password \
+      -s "${TELEGRAM_TOKEN_ITEM:-viventium-light/telegram_bot_token}" -w 2>/dev/null); then
+    export TELEGRAM_BOT_TOKEN="$value"
+  fi
+}
+
+resting() {  # his own Quit (./vx down): his paired Telegram chat is told Viventium rests; never a restart (restart calls down)
+  [ "${TELEGRAM:-on}" != off ] || return 0
+  pgrep -f "$ROOT/.venv/bin/python chat/telegram.py" >/dev/null 2>&1 || return 0  # (no bot running: nobody was reached)
+  ( telegram_token; [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && cd "$ROOT" \
+      && perl -e 'alarm shift; exec @ARGV' 10 "$ROOT/.venv/bin/python" chat/telegram.py --resting ) >/dev/null 2>&1 || true
+}
+
+started_at() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/ $//'; }  # when a process started (with its pid: which one)
+xperfect_source_clean() (  # one pin, patch, file and Git-index verdict for status and startup
+  python3 "$ROOT/core/downloads.py" xperfect --check --pin "$2"
+)
+
+source_identity() {  # commit and working tree at launch or build time, even in a linked worktree
+  local dir=${1:-$ROOT} xp="$ROOT/brain/xperfect" prefix commit changes light pin state=clean
+  if [ -n "${RELEASE:-}" ]; then
+    if [ "$dir" = "$xp" ]; then
+      if python3 "$ROOT/core/downloads.py" xperfect --check >/dev/null 2>&1; then state=packaged; else state=dirty; fi
+      printf '%s %s\n' "$(cat "$ROOT/brain/xperfect.pin")" "$state"
+    else printf '%s\n' "$RELEASE"; fi
+    return
+  fi
+  if [ "$dir" = "$xp" ] && [ ! -e "$xp/.git" ]; then
+    commit=$(git -C "$ROOT" rev-parse --verify HEAD:brain/xperfect) || { echo 'unknown unknown'; return; }
+    if python3 "$ROOT/core/downloads.py" xperfect --check >/dev/null 2>&1; then state=clean; else state=dirty; fi
+    echo "$commit $state"; return
+  fi
+  if ! prefix=$(git -C "$dir" rev-parse --show-prefix 2>/dev/null) || [ -n "$prefix" ] ||
+     ! commit=$(git -C "$dir" rev-parse --verify HEAD 2>/dev/null); then
+    echo 'unknown unknown'; return
+  fi
+  if [ "$dir" = "$xp" ]; then
+    light=$(git -C "$ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+  else
+    # Git still reports a changed gitlink. Check its working files separately against Light's patches.
+    changes=$(git --no-optional-locks -C "$dir" -c submodule.brain/xperfect.ignore=dirty \
+      status --porcelain --untracked-files=no 2>/dev/null) || { echo "$commit unknown"; return; }
+    [ -z "$changes" ] || { echo "$commit dirty"; return; }
+    light=$commit
+  fi
+  if [ "$dir" = "$ROOT" ] || [ "$dir" = "$xp" ]; then
+    if pin=$(git -C "$ROOT" rev-parse --verify "$light:brain/xperfect" 2>/dev/null); then
+      xperfect_source_clean "$light" "$pin" 2>/dev/null || state=dirty
+    elif [ "$dir" = "$xp" ]; then state=dirty; fi
+  fi
+  echo "$commit $state"
+}
+page_source() {  # only a stamp written for this Next build ID describes the files on disk
+  local stamp="$ROOT/call/ui/.next/vx-source"
+  [ -n "$1" ] && [ "$(sed -n 2p "$stamp" 2>/dev/null)" = "$1" ] && sed -n 1p "$stamp" || true
+}
+app_value() {
+  /usr/libexec/PlistBuddy -c "Print :$1" "$APP/Contents/Info.plist" 2>/dev/null || true
+}
+# A launch record for every process vx starts (logs/launched/PID): its part, when it started and the program it was
+# started as (that last for the reader: a script that hands over to its program, or a program that renames itself, is
+# still the process vx started). A process is this checkout's only by such a record: its pid with the same start time (a
+# pid the system gives another program has another start time), never its working folder or a path in its command line.
+# A part started before vx kept records: by the start time its older record (NAME.started) kept, and only where no record
+# of any kind exists, by its start within seconds before its pid file was written (a pid file is written as it starts).
+mine() {  # mine FILE...: a file of hers that vx itself writes, his alone before a word is in it (0600: core/state.py
+  # closes what is left open at the next start; the part being started keeps the permissions a login gives it)
+  local file; for file in "$@"; do (umask 077; : >>"$file"); chmod go-rwx "$file" 2>/dev/null || true; done
+}
+launched() {  # launched PID NAME COMMAND...: the record, written as it starts
+  local pid=$1 name=$2 word program="" record temp; shift 2
+  for word in "$@"; do  # (the program: the first word that is not env, nor a VAR=value env sets)
+    [ "$word" = env ] || [[ "$word" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || { program=${word##*/}; break; }
+  done
+  mkdir -p -m 700 "$LOGS/launched"
+  record="$LOGS/launched/$pid"
+  temp=$(mktemp "$LOGS/launched/.record.XXXXXXXX") || return 1
+  printf '%s\n' "$name" "$(started_at "$pid")" "$program" "${launch_source:-}" "${launch_build:-}" \
+    "${launch_build_source:-}" >"$temp" && mv -f "$temp" "$record" || { rm -f "$temp"; return 1; }
+}
+launch_holds() {  # launch_holds PID [NAME]: its launch record (for NAME) holds: the same pid with the same start time
+  local record="$LOGS/launched/$1"
+  [ -f "$record" ] && kill -0 "$1" 2>/dev/null || return 1
+  [ -z "${2:-}" ] || [ "$(sed -n 1p "$record")" = "$2" ] || return 1
+  [ "$(started_at "$1")" = "$(sed -n 2p "$record")" ]
+}
+own_pid() {  # own_pid NAME: the pid vx recorded for NAME, only while that very process runs (proved by its record; a pid
+  # the system has since given another program is never NAME)
+  local pid at gap; pid=$(cat "$LOGS/$1.pid" 2>/dev/null) || return 1
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$(stat -f %m "$LOGS/$1.pid")" -ge "$BOOT" ] && kill -0 "$pid" 2>/dev/null || return 1
+  if [ -f "$LOGS/launched/$pid" ]; then launch_holds "$pid" "$1" || return 1
+  elif [ -f "$LOGS/$1.started" ]; then [ "$(started_at "$pid")" = "$(tr -s ' ' <"$LOGS/$1.started" | sed 's/ $//')" ] || return 1
+  else  # (no record of any kind: it started within seconds before its pid was written)
+    at=$(date -j -f "%a %b %d %T %Y" "$(started_at "$pid")" +%s 2>/dev/null) || return 1
+    gap=$(( $(stat -f %m "$LOGS/$1.pid") - at )); [ "$gap" -ge 0 ] && [ "$gap" -le 10 ] || return 1
+  fi
+  echo "$pid"
+}
+proven() {  # proven PID: a process this checkout started, or one of the process group such a process leads (its child)
+  local pid=$1 leader file own
+  leader=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  for file in "$LOGS"/*.pid; do
+    [ -f "$file" ] || continue
+    own=$(own_pid "$(basename "$file" .pid)") || continue
+    if [ "$own" = "$pid" ] || [ "$own" = "$leader" ]; then return 0; fi
+  done
+  for file in "$LOGS"/launched/*; do  # (a part whose pid file is gone: its launch record still proves it)
+    [ -f "$file" ] || continue
+    own=${file##*/}
+    if { [ "$own" = "$pid" ] || [ "$own" = "$leader" ]; } && launch_holds "$own"; then return 0; fi
+  done
+  return 1
+}
+running() { own_pid "$1" >/dev/null; }
+tests_running() {  # a live test run holds the lock (a lock from before the last restart, or a dead pid, does not)
+  [ -d "$LOGS/tests.lock" ] && [ "$(stat -f %m "$LOGS/tests.lock")" -ge "$BOOT" ] || return 1
+  local owner; owner=$(cat "$LOGS/tests.lock/pid" 2>/dev/null)
+  if [ -z "$owner" ]; then [ $(( $(date +%s) - $(stat -f %m "$LOGS/tests.lock") )) -lt 60 ]; else kill -0 "$owner" 2>/dev/null; fi
+}
+
+# Every part vx starts is his live Light (brain/xperfect.py lets only these use his live xPerfect; tests never have it).
+export VX_RUNTIME=live
+
+start() {  # start NAME PORT COMMAND...  (background, own process group, log + pid in logs/)
+  local name=$1 port=$2; shift 2
+  # How it was started is remembered (logs/NAME.how): a part whose settings did not change stays up, warm.
+  local how; how=$(printf '%s\n' "$@" | shasum | cut -c1-16)
+  if [ "$port" != - ] && ! running "$name" && [ "$(holder "$port")" = other ]; then  # (said by status and keep too)
+    echo "  $name could not start: port $port is held by another program, not this Viventium. Quit that program, then ./vx up."
+    if [[ " livekit agent ui " == *" $name "* ]]; then blocked held; exit 1; fi
+    return 0
+  fi
+  if running "$name" || { [ "$port" != - ] && nc -z 127.0.0.1 "$port" 2>/dev/null; }; then
+    # LiveKit, her agent and the page hold Light's key: one that this project did not record starting is never kept.
+    if [ ! -f "$LOGS/$name.how" ] && [[ " livekit agent ui " == *" $name "* ]]; then
+      echo "  $name: something this project did not start is running$([ "$port" = - ] || echo " on port $port"). Stop it (./vx down), then ./vx up."; exit 1
+    fi
+    if [ ! -f "$LOGS/$name.how" ] || [ "$(cat "$LOGS/$name.how")" = "$how" ]; then echo "  $name: already running"; return; fi
+    echo "  $name: its settings changed"; if [ "$name" = doors ]; then stop_doors; else stop "$name" "${port#-}"; fi
+  fi
+  mine "$LOGS/$name.how" "$LOGS/$name.log" "$LOGS/$name.pid"  # (her part's own files: his alone from the start)
+  echo "$how" >"$LOGS/$name.how"
+  local launch_source launch_build="" launch_build_source=""
+  launch_source=$(source_identity)
+  case "$name" in
+    ui) launch_build=$(cat "$ROOT/call/ui/.next/BUILD_ID" 2>/dev/null || true); launch_build_source=$(page_source "$launch_build") ;;
+    menubar) launch_build_source=$(app_value ViventiumSource) ;;
+  esac
+  # macOS has no setsid(1); a new session makes "down" stop the whole process tree.
+  cd "$ROOT"
+  nohup python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$@" \
+    >"$LOGS/$name.log" 2>&1 </dev/null &
+  echo $! >"$LOGS/$name.pid"; disown; launched $! "$name" "$@"
+  echo "  $name: started"
+}
+
+start_ui() {  # start_ui NEXT UI: the page only needs to know if a room can publish audio.
+  local next="$1" ui="$2" voice=on
+  [ "$STT" != off ] || voice=off
+  LIVEKIT_API_SECRET="$LK_SECRET" VX_PHONE_SECRET="$PHONE_SECRET" start ui "$UI_PORT" env NEXT_TELEMETRY_DISABLED=1 LOCAL_ONLY=1 \
+    VX_ROOT="$ROOT" LIVEKIT_API_KEY="$LK_KEY" VX_LAN_ORIGIN="${VX_LAN_ORIGIN:-}" VX_LAN_LIVEKIT_URL="${VX_LAN_LIVEKIT_URL:-}" \
+    STT="$voice" "$next" start -H 127.0.0.1 -p "$UI_PORT" "$ui"
+}
+
+holder() {  # holder PORT: who listens on this computer's port: "ours" (proved this checkout's), "other" (another program),
+  # or "" (nothing)
+  local pid found=""
+  for pid in $(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null); do
+    if proven "$pid"; then echo ours; return; fi
+    found=other
+  done
+  if [ -z "$found" ] && nc -z 127.0.0.1 "$1" 2>/dev/null; then found=other; fi  # (another user's: its process unseen)
+  echo "$found"
+}
+held_by_other() {  # before anything stops: another program holds LiveKit's port or the page's, so they could not start
+  # again (said, with what to do; then nothing is stopped)
+  local pair said=""
+  for pair in livekit:7880 page:$UI_PORT; do
+    if [ "$(holder "${pair##*:}")" = other ]; then said="$said ${pair%%:*} (port ${pair##*:})"; fi
+  done
+  [ -n "$said" ] || return 1
+  echo "Another program holds the port of$said, so Viventium could not start again: nothing was stopped. Quit that program, then try again."
+  blocked held; return 0
+}
+on_port() {  # on_port NAME PORT, for keep: up on its port (this Viventium's), else gone (nothing there) or held (another program)
+  case "$(holder "$2")" in ours) ;; other) held="$held $1" ;; *) gone="$gone $1" ;; esac
+}
+
+wait_port() {  # wait_port NAME PORT SECONDS
+  for _ in $(seq 1 "$3"); do nc -z 127.0.0.1 "$2" 2>/dev/null && return 0; sleep 1; done
+  echo "  $1 did not open port $2; see logs/$1.log"; return 1
+}
+
+stop() {  # stop NAME [PORT...]: the recorded process (its group with it), then what of this checkout's is still on its
+  # ports. Nothing is signalled that is not proved this checkout's by its launch record (own_pid, proven): a group only
+  # when its leader is that process, a listener only when it or its group's leader is one vx started.
+  local name=$1 pid group member port; shift
+  if pid=$(own_pid "$name"); then
+    group=$pid; [ "$(ps -o pgid= -p "$pid" | tr -d ' ')" = "$pid" ] || group=""
+    kill -TERM -- "${group:+-}$pid" 2>/dev/null || true
+    # A draining agent can linger (and keep old settings): give it 10 s, then end it.
+    for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+    if own_pid "$name" >/dev/null; then kill -KILL -- "${group:+-}$pid" 2>/dev/null || true
+    elif [ -n "$group" ]; then  # (its leader gone: what is left of the group it led, which only its children can be in)
+      for member in $(pgrep -g "$group" 2>/dev/null); do kill -KILL "$member" 2>/dev/null || true; done
+    fi
+    rm -f "$LOGS/launched/$pid"
+  fi
+  rm -f "$LOGS/$name.pid" "$LOGS/$name.started"
+  for port in "$@"; do  # (a leftover of this checkout's own; another program on the port is never stopped)
+    [ -n "$port" ] || continue
+    for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null); do
+      if ! proven "$pid"; then echo "  $name: port $port is held by another program; it is left alone"; continue; fi
+      group=$(ps -o pgid= -p "$pid" | tr -d ' ')
+      if [ -n "$group" ] && proven "$group" && [ "$(ps -o pgid= -p "$group" 2>/dev/null | tr -d ' ')" = "$group" ]; then
+        kill -TERM -- "-$group" 2>/dev/null || true; rm -f "$LOGS/launched/$group"
+      else kill -TERM "$pid" 2>/dev/null || true; rm -f "$LOGS/launched/$pid"; fi
+    done
+  done
+}
+
+serve_embed() {  # Light's own small server for the embedding model (memory by meaning, core/memory.py): its own
+  # port and process, like her other models, so she never leans on another program's Ollama (main Viventium's :11434).
+  local model="${EMBED_MODEL:-qwen3-embedding:0.6b}"
+  start embed-model 11437 env OLLAMA_HOST=127.0.0.1:11437 OLLAMA_KEEP_ALIVE=-1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_NOPRUNE=1 OLLAMA_CONTEXT_LENGTH=8192 "$OLLAMA_BIN" serve
+  wait_port embed-model 11437 30
+  if ! model_present "$model" && ! pull_retry 11437 "$model"; then
+    if [ "${1:-}" = background ]; then return 1; fi
+    download_failed "Her memory's model"
+  fi
+}
+
+pull() {  # pull PORT MODEL: let Ollama handle blob ranges and verify the registry digests
+  python3 - "$1" "$2" "$LOGS/up.progress" <<'EOF'
+import json, sys, urllib.request
+port, model, kept = sys.argv[1:4]
+asked = urllib.request.Request(f"http://127.0.0.1:{port}/api/pull", data=json.dumps({"model": model}).encode(), method="POST")
+shown = -1
+with urllib.request.urlopen(asked, timeout=120) as reply:
+    for line in reply:
+        said = json.loads(line or b"{}")
+        if said.get("error"):
+            print(f"  {said['error']}", file=sys.stderr)
+            sys.exit(1)
+        if said.get("status") == "success":
+            sys.exit(0)
+        total, done = said.get("total") or 0, said.get("completed") or 0
+        if total > 1e9 and int(done * 100 / total) != shown:  # (its weights; its small parts come and go at once)
+            shown = int(done * 100 / total)
+            print(f"  download: the brain \u00b7 {shown}%", flush=True)
+            try:
+                open(kept, "w").write(f"download: the brain \u00b7 {shown}%\n")  # (for a start waiting on this one)
+            except OSError:
+                pass
+sys.exit(1)
+EOF
+}
+
+pull_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    if pull "$@" 2>>"$LOGS/setup.log"; then return 0; fi
+    [ "$attempt" -lt 3 ] && [ "$(free_gb)" -ge 2 ] || return 1
+    sleep $(( 2 ** attempt ))
+  done
+}
+
+serve_model() {  # serve_model NAME PORT MODEL [KEEP] [SLOTS]: a private Ollama server, model loaded (kept warm, or KEEP)
+  # One model per server: a model tried once (e.g. an eval) replaces it instead of staying resident too.
+  # SLOTS: requests it runs at once, each with its own cached conversation (her own server has two: one
+  # slot made every one-word question swap her conversation out to memory and back, 0.7 s each way on a long call).
+  start "$1" "$2" env OLLAMA_HOST="127.0.0.1:$2" OLLAMA_KEEP_ALIVE="${4:--1}" OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_FLASH_ATTENTION=1 \
+    OLLAMA_CONTEXT_LENGTH="${LOCAL_CONTEXT:-65536}" OLLAMA_NUM_PARALLEL="${5:-1}" OLLAMA_NOPRUNE=1 "$OLLAMA_BIN" serve
+  # (a server that never listens could not start its model: kept as that answer, and the start goes on to her page and
+  # the reason, mind_answers; before, it stopped the start here, after a restart had already stopped her agent)
+  if ! wait_port "$1" "$2" 30; then printf -v "WARMED_$2" '%s' "$3 load"; return 0; fi
+  # The model itself, downloaded once into Ollama's store on this Mac (shared with any other Ollama).
+  model_present "$3" || pull_retry "$2" "$3" || download_failed "Her model ($3)"
+  # Its first load, now and never on a first word, given three minutes (VX_LOAD_WAIT; a load that hangs never holds the
+  # start). What it said is kept for this run as WARMED_PORT="MODEL WHAT", for "Ready" (answered).
+  local heard; heard=$(answer "http://127.0.0.1:$2/v1" "$3" "${VX_LOAD_WAIT:-180}")
+  printf -v "WARMED_$2" '%s' "$3 ${heard:-ok}"
+}
+
+answer() {  # answer URL MODEL SECONDS: one word asked of a model server on this Mac (its OpenAI-style API, as her mind asks
+  # it), bounded in time (curl's own limit). Nothing when a word came back; else what happened, by structure, never by its
+  # words: "load" (an error status, or gone mid-answer: this Mac could not run the model), "absent" (no server there: it
+  # could not start, or has not started yet), "empty" (it answered, with no word in it), "silent" (no answer in SECONDS:
+  # the only one that may pass by asking again)
+  local said="" rc=0
+  said=$(curl -s -w '\n%{http_code}' --max-time "$3" "${1%/}/chat/completions" -H 'Content-Type: application/json' -d \
+    "{\"model\":\"$2\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK.\"}],\"max_tokens\":8,\"reasoning_effort\":\"none\"}") || rc=$?
+  local code=${said##*$'\n'}
+  if [ "$rc" = 28 ]; then echo silent
+  elif [ "$rc" = 7 ]; then echo absent
+  elif [ "$rc" != 0 ] || [ "${code:0:1}" != 2 ]; then echo load
+  elif ! printf %s "${said%$'\n'*}" | python3 -c 'import json, sys
+choice = (json.load(sys.stdin).get("choices") or [{}])[0]
+sys.exit(0 if str((choice.get("message") or {}).get("content") or "").strip() else 1)' 2>/dev/null; then echo empty; fi
+}
+
+answered() {  # answered URL MODEL SECONDS: as answer, from what this Mac's server at that address said when serve_model
+  # loaded that model this run, when that settled it (a word, an error, no server, no word); asked now when it was not
+  # loaded here, or gave no answer in time then (a restart leaves her last Life summary running, which can hold its one
+  # slot for minutes)
+  local port="" kept
+  case "$1" in http://127.0.0.1:*) port=${1#http://127.0.0.1:}; port=${port%%/*} ;; esac
+  kept="WARMED_${port:-none}"; kept="${!kept:-}"
+  if [ -n "$port" ] && [ "${kept%% *}" = "$2" ] && [ "${kept##* }" != silent ]; then [ "${kept##* }" = ok ] || echo "${kept##* }"
+  else answer "$@"; fi
+}
+
+verdict() {  # verdict WHAT: this start's verdict on her mind (logs/mind-answer), whole or not at all: written beside it and
+  # moved in, so no look ever finds it empty (the menu bar took an empty one for no failure), with
+  # the profile it is of on its second line (her channels and her page ignore another profile's: core/accounts mind_down)
+  local into="$LOGS/mind-answer.$$"
+  mine "$into"; printf '%s\n%s\n' "$1" "$PROFILE" >"$into"; mv -f "$into" "$LOGS/mind-answer"
+}
+
+mind_answers() {  # mind_answers [check]: before "Ready", one real answer from the mind she will use, bounded in time (a clean Mac: her
+  # model aborted on its graphics while every part was up, and only her page said so, once a word was typed). An answer
+  # is a word. Her chosen mind, else its declared backup (QUEEN_FALLBACK=local: this Mac's model at MEMORY_URL, as
+  # brain/queen builds it); an online mind refused while its backup answers is no stop (Settings shows why once her first
+  # turn sets it aside: core/accounts). The verdict is kept in logs/mind-answer ("answered", or what happened), replaced
+  # only by the next verdict: ./vx status reads it, so a start that asks again never shows her ready before it knows.
+  # When neither answers: one plain line, and why for the app (logs/blocked "mind KIND"), decided by what happened;
+  # returns 3 when asking again may work (no answer in time or a transient online backup failure), else 4 (another mind).
+  # This Mac's servers answered as serve_model loaded them (answered); an online mind is asked here (settings/probe.py),
+  # given VX_MIND_WAIT seconds.
+  # check (./vx ready, before a restart stops anything): a timeout, a local backup not started yet, or a transient
+  # online backup failure is the start's own to ask again at its gate. It writes nothing and returns 1 with one line, or 0.
+  local looking="${1:-}" wait="${VX_MIND_WAIT:-60}" first="" second="" what="" backed="" key said here probe=answer
+  [ -z "$looking" ] || wait="${VX_MIND_WAIT:-10}"
+  if [ "$QUEEN" = ollama ]; then  # (a mind on this Mac declares no backup)
+    first=$(answered "${QUEEN_URL:-http://127.0.0.1:11435/v1}" "$QUEEN_MODEL" "$wait")
+  else
+    if [ "${QUEEN_FALLBACK:-}" = local ] && [ -n "${MEMORY_URL:-}" ]; then backed=local; fi
+    if [ "${QUEEN_FALLBACK:-}" = openai ] && [ "$QUEEN" != openai ] && have_key OPENAI_API_KEY; then backed=openai; fi
+    # Her mind on your Grok subscription turned off (the page's switch, or KEYS_OFF) with no backup declared: your
+    # choice, never a missing sign-in. Her replies pause; the check passes, a start says so and goes on.
+    if [ -z "$backed" ] && [ "$(mind_key 2>/dev/null)" = grok_mind ] \
+        && { [ -e "$LOGS/grok_mind.off" ] || [[ " ${KEYS_OFF:-} " == *" grok_mind "* ]]; }; then
+      [ -n "$looking" ] && return 0
+      verdict off
+      echo "Viventium's mind is turned off in Settings: replies pause until you turn a mind on."
+      return 0
+    fi
+    if [ "$QUEEN" = chatgpt_plan ] && [ -z "$looking" ] && [ -n "${VX_FROM_APP:-}" ] \
+        && [ -z "${VX_KEEPING:-}" ] && [ "${VX_SETUP_WINDOW:-}" = 1 ] && [ -p /dev/fd/0 ] \
+        && [ -s "$LOGS/.first-conversation-pending" ] && [ ! -e "$LOGS/.first-ready" ]; then
+      probe=greeting
+    fi
+    if [ "$QUEEN" != chatgpt_plan ] && [ -n "$backed" ] && key=$(mind_key) && ! have_key "$key"; then
+      first=key  # (no key to use: it is not built at all, and its backup answers alone, brain/queen)
+    else  # (its key reaches this one check, in a subshell of its own: no part started after it inherits it)
+      local into=/dev/null; [ -n "$looking" ] || { into="$LOGS/mind.log"; mine "$into"; }
+      if said=$( (load_keys; cd "$ROOT" && VX_MIND_WAIT="${VX_MIND_WAIT:-25}" "$ROOT/.venv/bin/python" -m settings.probe "$probe") \
+          2>"$into"); then first=""
+      else
+        first=$(sed -n 1p <<<"$said"); what=$(sed -n 2p <<<"$said")
+        [ -n "$first" ] || { first=failed; what="It could not be asked"; }  # (the check itself did not run)
+      fi
+      if [ -n "$looking" ] && [ "$first" = silent ]; then return 0; fi
+    fi
+    if [ -n "$looking" ] && [ "$first" = connected ]; then return 0; fi
+    if [ -n "$first" ] && [ "$backed" = local ]; then
+      second=$(answered "$MEMORY_URL" "${MEMORY_MODEL:-qwen3.6:latest}" "$wait")
+      [ -n "$second" ] || first=""  # (its backup answers)
+      if [ -n "$looking" ] && { [ "$second" = silent ] || [ "$second" = absent ]; }; then return 0; fi
+    elif [ -n "$first" ] && [ "$backed" = openai ]; then
+      if said=$( (load_keys; cd "$ROOT" && QUEEN=openai QUEEN_MODEL="$QUEEN_FALLBACK_MODEL" QUEEN_EFFORT=low \
+          QUEEN_URL="${QUEEN_FALLBACK_URL:-}" VX_MIND_WAIT="${VX_MIND_WAIT:-25}" "$ROOT/.venv/bin/python" -m settings.probe answer) 2>/dev/null); then
+        first=""
+      else
+        # The backup is the route that could still answer. Only its own auth refusal needs a different mind.
+        local fallback; fallback=$(sed -n 1p <<<"$said")
+        if [ "$first" != connected ]; then
+          case "$fallback" in
+            "refused 401"|"refused 403") first="$fallback" ;;
+            *) first=silent ;;
+          esac
+        fi
+        what="${what:+$what. }$(sed -n 2p <<<"$said")"
+        what="${what:-OpenAI could not be asked}"
+      fi
+    fi
+  fi
+  if [ -n "$looking" ] && { [ "$first" = silent ] || [ "$first" = absent ]; }; then return 0; fi
+  if [ "$first" = connected ]; then
+    verdict connected
+    echo "ChatGPT is connected. Readiness waits for its first answer."
+    return 5
+  fi
+  if [ "$first" = absent ]; then first=load; fi
+  if [ "$second" = absent ]; then second=load; fi
+  if [ -n "$looking" ] && [ -n "$first" ]; then  # (./vx ready: definite; its words, and nothing written)
+    case "${second:-$first}" in empty) here="This Mac's model gave no answer" ;; *) here="This Mac could not run its model" ;; esac
+    if [ "$QUEEN" = ollama ] || [ "$first" = key ]; then what=$here
+    elif [ "$second" = empty ]; then what="$what, and its backup on this Mac gave no answer"
+    elif [ -n "$second" ]; then what="$what, and this Mac could not run its backup"; fi
+    echo "Viventium's mind did not answer on $PROFILE: $what."; return 1
+  fi
+  [ -z "$looking" ] || return 0
+  if [ -z "$first" ]; then verdict answered; return 0; fi
+  case "${second:-$first}" in
+    silent) here="This Mac's model is not answering" ;; empty) here="This Mac's model gave no answer" ;;
+    *) here="This Mac could not run its model" ;;
+  esac
+  if [ "$QUEEN" = ollama ]; then what=$here
+  elif [ "$first" = key ]; then first=$second; what=$here
+  elif [ -n "$second" ]; then
+    case "$second" in
+      silent) what="$what, and its backup on this Mac is not answering" ;; empty) what="$what, and its backup on this Mac gave no answer" ;;
+      *) what="$what, and this Mac could not run its backup" ;;
+    esac
+  fi
+  # (her mind refused while its backup only ran out of time, as when her last Life summary holds its one slot: asking
+  # again may pass, so that is the reason; the line still says both)
+  if [ "$second" = silent ]; then first=silent; fi
+  verdict "$first"; blocked mind $first
+  if [ -n "${VX_FROM_APP:-}" ]; then echo "$what."  # (the app's window: its title, this line and its one way forward)
+  elif [ "$first" = silent ]; then echo "Viventium's mind did not answer: $what. ./vx up asks it again."
+  else echo "Viventium's mind did not answer: $what. Choose another mind in Settings, under Brain: http://localhost:$UI_PORT/settings#brain"; fi
+  if [ "$first" = silent ]; then return 3; fi
+  return 4
+}
+
+coordinator() {  # coordinator [STATE HARNESS local|signed-in]: an xPerfect state's coordinator settings and its own
+  # ports (this profile's Workers by default); prints "changed" if updated
+  local state="${1:-$XPERFECT_STATE}"
+  python3 - "$state/config.json" "${2:-${WORKER_PROFILE:-codex-cli}}" "${3:-${WORKERS:-signed-in}}" "$ROOT" "${LOGS:-$ROOT/logs}" $(xp_ports "$state") <<'EOF'
+import json, os, platform, sys
+path, profile, workers, root, logs = sys.argv[1:6]
+ports = dict(zip(("api", "ui", "mcp"), map(int, sys.argv[6:9])))  # (xPerfect reads them when it starts)
+c = json.load(open(path)); env = dict(c["env"])
+if workers == "local":  # the local model is not in xPerfect's model catalog: a catalog id on the local route
+    model = {"claude-code": "claude-code:opus", "codex-cli": "codex-cli:native-default"}[profile]
+    env["WPR_CLAUDE_CODE_PROVIDER_MODEL"] = c["models"]["claude-code"]
+    # One GPU serves her and the work: one job at a time keeps her fast (two at once took her replies from
+    # 2.7 to 4.4 s and timed one out). Both lanes: a job's coordinator turn and its Worker (the
+    # mission lane, where the work runs: setting only the first let three local Workers overlap).
+    env["WPR_HOST_CONVERSATION_SLOTS_PER_CLI"] = "1"
+    env["WPR_HOST_MISSION_SLOTS_PER_CLI"] = "1"
+else:  # your own Codex / Claude Code sign-in, with this state's exact model (xPerfect's defaults: 2 and 3)
+    model = ""  # (set below, once each harness's exact model is known)
+    env.pop("WPR_HOST_CONVERSATION_SLOTS_PER_CLI", None)
+    env.pop("WPR_HOST_MISSION_SLOTS_PER_CLI", None)
+    # A fault to test the Workers' backup: Claude Code gets a sign-in that Anthropic refuses (VX_TEST_BREAK_CLAUDE=1
+    # ./vx restart; a plain ./vx restart takes it away again).
+    for key in ("WPR_CLAUDE_CODE_AUTH_TOKEN", "WPR_CLAUDE_CODE_BASE_URL"):
+        env.pop(key, None)
+    if os.environ.get("VX_TEST_BREAK_CLAUDE") == "1":
+        env.update(WPR_CLAUDE_CODE_AUTH_TOKEN="broken-for-a-test", WPR_CLAUDE_CODE_BASE_URL="https://api.anthropic.com")
+facts = ("You manage one job of Viventium's background work while Viventium keeps talking with the user. The "
+         "job's work already runs on its own Worker. The request names the Worker and its access. Your own "
+         "session reaches only its workspace, so do not redo the work there. If the user's later turns change the "
+         "job, steer that Worker; add helpers only for parts that are independent. Report its result faithfully, "
+         "naming each file made or changed by its full path. A tool that was denied or failed is a block, never done.")
+# A Worker's browser and computer use are its own harness's (the requirement: the native harnesses provide them):
+# Claude Code its own Chrome (Claude in Chrome, Anthropic's extension: no remote debugging), Codex its computer use
+# (xPerfect's own list of the tool servers a Worker keeps: computer-use, node_repl, cua_repl). Nothing of Light's own
+# connects to Chrome; what an older start kept here for Light's own bridge to it goes.
+env["WPR_CLAUDE_CODE_ENABLE_CHROME"] = "1"
+# Pass the whole deny list. xPerfect refuses a grant if Grok cannot express any rule.
+env["WPR_GROK_DENY"] = env.get("WPR_CLAUDE_CODE_DENY") or "[]"
+for key in ("GLASSHIVE_HOST_CODEX_MCP_APPEND", "GLASSHIVE_HOST_CODEX_NATIVE_MCP_ALLOWLIST"):
+    env.pop(key, None)
+# Its clock rings Light's doorbell (core/doorbell.py) when a moment she was asked to keep has come: a signed notice
+# to this Mac only. xPerfect refuses a loopback address unless it is told this one port.
+env["WPR_WEBHOOK_ALLOW_LOCAL_HTTP"] = "true"
+env["WPR_WEBHOOK_ALLOWED_PORTS"] = "8869"
+# Several Claude subscriptions (Accounts, the + on the settings page): on this single-user Mac each one signs in in
+# its own home (Claude Code keeps one Keychain login per config folder); xPerfect allows it only when told
+# (brain/patches/xperfect-0006). This Mac's own Claude sign-in is not read, copied or changed.
+env["GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS"] = "1"
+# On the local model one GPU serves her and the work: the coordinator is not woken again just to restate the
+# Worker's result (Light tells the Worker's own words); in the cloud it reports, and can add what it saw.
+# Each Worker harness's thinking effort and exact model, as chosen (WORKER_EFFORT_<HARNESS>, WORKER_MODEL_<HARNESS>;
+# xPerfect's own names for them below). Unset: high, and the model this state was set up with.
+names = {"claude-code": ("CLAUDE_CODE", "WPR_CLAUDE_CODE_EFFORT"), "codex-cli": ("CODEX_CLI", "WPR_CODEX_CLI_REASONING_EFFORT"),
+         "grok-build": ("GROK_BUILD", "WPR_GROK_REASONING_EFFORT")}
+models = dict(c["models"])
+managed_auth = os.path.join(root, "tools", "grok-worker-auth")
+env["WPR_GROK_MANAGED_AUTH_PROVIDER"] = managed_auth
+env["WPR_GROK_AUTH_OFF_PATH"] = os.path.join(logs, "grok_mind.off")
+env["WPR_GROK_AUTH_ISSUER_FILE"] = os.path.join(root, "core", "grok_worker_auth.py")
+env.pop("WPR_GROK_AUTH_PROVIDER_COMMAND", None)
+if workers == "signed-in" and os.environ.get("WORKER_GROK_SIGN_IN") == "1":
+    env["WPR_GROK_AUTH_PROVIDER_COMMAND"] = managed_auth
+    binary = os.path.join(root, "tools", "grok-build", "grok")
+    with open(os.path.join(root, "tools", "grok-build-pin.json")) as pin:
+        env["WPR_GROK_MANAGED_BINARY_SHA256"] = json.load(pin)["sha256"][platform.machine()]
+    env["WPR_GROK_MANAGED_BINARY"] = env["WPR_GROK_BIN"] = binary
+    models.setdefault("grok-build", "grok-4.7")  # xPerfect's existing Grok Build route
+for harness, (name, effort_key) in names.items():
+    env[effort_key] = os.environ.get(f"WORKER_EFFORT_{name}") or "high"
+    if workers != "local" and os.environ.get(f"WORKER_MODEL_{name}"):
+        models[harness] = os.environ[f"WORKER_MODEL_{name}"]
+# Who manages a job is its own choice (MANAGER_PROFILE, MANAGER_EFFORT); unset, it is the first Worker's harness.
+manager = profile if workers == "local" else os.environ.get("MANAGER_PROFILE") or profile
+env.pop("WPR_CODEX_EXTERNAL_PLAN_COMMAND", None)
+env.pop("WPR_CODEX_EXTERNAL_PLAN_WORKERS", None)
+if workers != "local":
+    if manager == "grok-build" and "WPR_GROK_AUTH_PROVIDER_COMMAND" not in env:
+        manager = "claude-code"  # signed out: xPerfect still serves the clock
+    model = f"{manager}:{models[manager]}"
+effort = (workers != "local" and os.environ.get("MANAGER_EFFORT")) or (env[names[manager][1]] if manager in names else "high")
+# An attended Grok job reports through its own Worker. A second Grok run could ask outside its approval path.
+wake = workers != "local" and not (manager == "grok-build" and "WPR_GROK_AUTH_PROVIDER_COMMAND" in env)
+env["GLASSHIVE_COORDINATOR_CONFIG_JSON"] = json.dumps({"model": model, "effort": effort,
+                                                       "wake_on_results": wake, "developer_instructions": facts})
+if env != c["env"] or models != c["models"] or ports != c["ports"]:
+    c["env"], c["models"], c["ports"] = env, models, ports
+    with open(path + ".tmp", "w", opener=lambda p, f: os.open(p, f, 0o600)) as h:
+        json.dump(c, h, indent=2); h.write("\n")
+    os.replace(path + ".tmp", path)
+    print("changed")
+EOF
+}
+
+first_choice() {  # the first run, no place chosen yet: Hybrid when one of your subscriptions is signed in by now (made in
+  # the app's window while she set up), else Local. Decided once, after the downloads both need, before anything differs.
+  [ -f "$LOGS/.first-run" ] || return 0
+  rm -f "$LOGS/.first-run"
+  [ "$PROFILE" = local ] || return 0
+  ( load_profile hybrid check >/dev/null; fallback="${WORKER_FALLBACK:-}"
+    if have_key grok_mind; then exit 0; fi
+    for harness in $WORKER_PROFILE ${fallback//,/ }; do if signed_in_now "$harness"; then exit 0; fi; done; exit 1 ) || return 0
+  load_profile hybrid; ask_keys; sign_in
+  if [ "${WORKER_GROK_SIGN_IN:-}" = 1 ]; then grok_harness; fi
+  echo "  hybrid: your subscription does the work"
+}
+
+app_first_choice() {
+  [ -n "${VX_FROM_APP:-}" ] && [ -f "$LOGS/.first-run" ] || return 0
+  local target="$PROFILE"
+  [ "$target" != local ] || target=hybrid
+  if (load_profile "$target" assess; cd "$ROOT"; .venv/bin/python -m settings setup-mind); then
+    load_profile "$target"
+    rm -f "$LOGS/.first-run"
+  fi
+}
+
+codex_home() {  # the local Workers' Codex home: the tracked template, with this Mac's paths
+  sed -e "s#{ROOT}#$ROOT#g" -e "s#{HOME}#$HOME#g" "$ROOT/brain/codex-home-local/config.template.toml" \
+    > "$ROOT/brain/codex-home-local/config.toml"
+}
+
+draft_first_greeting() {
+  [ -n "${VX_FROM_APP:-}" ] && [ -s "$LOGS/.first-conversation-pending" ] && [ ! -e "$LOGS/.first-ready" ] || return 0
+  mine "$LOGS/first-greeting.log"
+  (load_keys; cd "$ROOT"; exec "$ROOT/.venv/bin/python" -m brain.greeting first) \
+    >"$LOGS/first-greeting.log" 2>&1 </dev/null &
+}
+
+start_agent() {  # start_agent [VAR=value ...]: the voice agent (cloud keys go to it only)
+  livekit_keys; load_keys  # (LiveKit's key: its name on the command line, so a new key restarts her; its secret never)
+  LIVEKIT_API_SECRET="$LK_SECRET" start agent - env HF_HUB_OFFLINE=1 LIVEKIT_API_KEY="$LK_KEY" ${VX_TRACE_CONTEXT:+VX_TRACE_CONTEXT=1} \
+    "$@" "$ROOT/.venv/bin/python" call/agent.py start
+  unload_keys
+}
+
+start_life_core() (
+  # Small Mac summaries use the same helpers as Feelings. Limit their keys to this process.
+  if [ -n "${SMALL_MAC_TIER:-}" ]; then load_keys; fi
+  start life-core - "$ROOT/.venv/bin/python" -m core.life core
+)
+
+start_chat() {  # Telegram (text, voice notes, the schedules' clock) when a bot token is set; with no bot, the
+  # clock alone (core/clock.py), so a reminder still comes due: one owner of the clock at a time.
+  load_keys; telegram_token
+  if [ "${TELEGRAM:-on}" != off ] && [ -n "${TELEGRAM_BOT_TOKEN:-}" ]; then
+    stop clock
+    start chat - env HF_HUB_OFFLINE=1 "$ROOT/.venv/bin/python" chat/telegram.py
+    unload_keys
+  else
+    unload_keys  # (the clock needs no key)
+    start clock - "$ROOT/.venv/bin/python" -m core.clock
+  fi
+}
+
+wait_agent() {  # a call only reaches an agent that registered before the room opened
+  for _ in $(seq 1 120); do grep -q 'registered worker' "$LOGS/agent.log" 2>/dev/null && return 0; sleep 0.5; done
+  echo "  agent did not register; see logs/agent.log"; return 1
+}
+
+settle() {  # before a restart on the loaded profile: stop her agent and Telegram (they read their settings when
+  # they start) and only the local parts this profile no longer uses. Everything else stays up and warm: a
+  # change of one setting used to stop and reload every model and LiveKit, about 25 s in which a call got no answer.
+  stop chat; stop clock; stop agent; stop doorbell 8869; stop hearing-setup
+  [ -n "${VX_LAN_ORIGIN:-}" ] || stop_doors  # (calling from the phone turned off: its doors close, by their ports too)
+  [ "$STT" = whisper_local ] || stop stt 8930
+  local_voice || stop tts 8940
+  [ "$QUEEN" = ollama ] || stop model 11435
+  if [ "${WORKERS:-}" != local ] && [ -z "${WORKERS_LOCAL:-}" ] && [[ "${FEELINGS_URL:-}${MEMORY_URL:-}" != *:11436* ]]; then stop worker-model 11436; fi
+}
+
+test_life() {  # test_life SCRIPT [ARGS]: the agent on a fresh copy of the synthetic Life and its own state
+  # (conversation, jobs, schedules, Feelings), so test calls never land in yours, and Telegram paused (it
+  # would adopt test Workers). Your own Life, state and Telegram come back afterwards, whatever happens.
+  local life="$LOGS/tests/life" state="$LOGS/tests/state"
+  # Never under a call of yours: the run swaps her agent for one on a test state, and your call would land there.
+  # A call touches state/core/call-live every 20 s (call/agent.py).
+  local live="$ROOT/state/core/call-live"
+  if [ -f "$live" ] && [ $(( $(date +%s) - $(stat -f %m "$live") )) -lt 60 ]; then
+    echo "A call is on right now; run the tests when it ends."; exit 1
+  fi
+  # One test run at a time, decided before anything is touched: two would swap the same agent under each other,
+  # and a second one used to wipe the first one's test state before it saw the lock.
+  if ! mkdir "$LOGS/tests.lock" 2>/dev/null; then
+    if tests_running; then
+      echo "Another test run (pid $(cat "$LOGS/tests.lock/pid" 2>/dev/null || echo starting)) is using its agent; run this when it ends."; exit 1
+    fi
+    rm -rf "$LOGS/tests.lock"; mkdir "$LOGS/tests.lock" 2>/dev/null || { echo "Another test run just started."; exit 1; }
+  fi
+  echo $$ > "$LOGS/tests.lock/pid"
+  # A previous test's Life summary still being written (after its hang-up) would land in this one's fresh
+  # Life and be "remembered" here (she took another test's files for work already running).
+  for _ in $(seq 1 60); do pgrep -f "core.life summary" >/dev/null || break; sleep 2; done
+  rm -rf "$life" "$state"; mkdir -p "$state/core"; cp -R "$ROOT/tests/fixtures/life" "$life"
+  cp "$ROOT/state/core/telegram.json" "$state/core/" 2>/dev/null || true  # the owner's chat, for test-telegram
+  shared record
+  trap 'shared check; stop agent; : > "$LOGS/agent.log"; VX_NO_OPEN=1 up "$PROFILE" | grep -E "agent|chat|Ready|!!|was:|now:|chmod"; rm -rf "$LOGS/tests.lock"' EXIT
+  # (VX_TEST_ENV: a fault to test a backup, e.g. "XAI_API_KEY=broken" so her cloud voice cannot be reached)
+  # The synthetic Life is findable by meaning, like yours (its own small index, in the test state).
+  LIFE="$life" VX_STATE="$state" "$ROOT/.venv/bin/python" -m core.memory refresh >/dev/null 2>&1 || true
+  # Its turns go to its own log, never yours: the Live view of the Subconscious page reads yours (else test turns
+  # fill it, a test's question showing as the newest turn).
+  local turns="$LOGS/tests/turns.jsonl"; : > "$turns"
+  stop chat; stop agent; : > "$LOGS/agent.log"; start_agent LIFE="$life" VX_STATE="$state" VX_TURNS="$turns" ${VX_TEST_ENV:-}; wait_agent
+  # The test process gets the same synthetic Life and state (test-telegram runs a Queen itself), and
+  # only test-telegram gets the keys it needs (start_agent unloads them).
+  if [ "${TEST_TELEGRAM:-}" = 1 ]; then load_keys; telegram_token; fi
+  # (the meaning model her agent finds by itself, core/memory.py, named for the test: a test reaches a part of his
+  # Light only when what runs it names that part, tests/sandbox.py)
+  LIFE="$life" VX_STATE="$state" VX_TURNS="$turns" EMBED_URL="${EMBED_URL:-http://127.0.0.1:11437}" "$ROOT/.venv/bin/python" "$@"
+}
+
+bench_test() {  # ./vx test: Light's call tests on the bench (tools/bench/bench.py once), a second Light beside this one
+  # with its own LiveKit, page, agent, state and Workers' xPerfect, on this profile's mind and Workers. Your Light keeps
+  # running (no agent swapped, Telegram not paused) and nothing of yours is touched; it starts and stops around the run.
+  local live="$ROOT/state/core/call-live"  # (never under a call of yours: the tests would share her models with it)
+  if [ -f "$live" ] && [ $(( $(date +%s) - $(stat -f %m "$live") )) -lt 60 ]; then
+    echo "A call is on right now; run the tests when it ends."; exit 1
+  fi
+  local mind="" workers="${WORKER_PROFILE:-claude-code}"
+  if [ "$QUEEN" = ollama ]; then mind=local; else mind=hybrid; fi  # (the profile as the person has it: Local with Feelings and memory by meaning, or Hybrid)
+  [ "${WORKERS:-}" = local ] && workers=local
+  (cd "$ROOT" && BENCH_PROFILE="$mind" BENCH_WORKER="$workers" "$ROOT/.venv/bin/python" tools/bench/bench.py once "$@")
+}
+
+phone_parts() {  # while calling from his phone is on (Settings, Channels, Phone: VX_LAN_ORIGIN): Viventium's own
+  # certificate for this Mac's name made, and LiveKit's settings with the phone's sound on the network (call/phone.py);
+  # prints that file, then the certificate's generation (its checksum: a new one restarts the doors). Off, or when they
+  # cannot be made (said): nothing, and calls stay on this Mac.
+  [ -n "${VX_LAN_ORIGIN:-}" ] || return 0
+  local made folder
+  if folder=$(cd "$ROOT" && "$ROOT/.venv/bin/python" -m call.phone certificate) && [ -f "$folder/doors.crt" ] \
+      && made=$(cd "$ROOT" && "$ROOT/.venv/bin/python" -m call.phone livekit) && [ -f "$made" ]; then
+    echo "$made"; shasum < "$folder/doors.crt" | cut -c1-12
+  else
+    echo "  phone: Viventium's certificate or LiveKit's settings for the phone could not be made; calls stay on this Mac" >&2
+  fi
+}
+
+door_ports() {  # the ports of the phone's two doors: the ones set now (or the usual ones), and the ones they last opened on
+  local url port
+  for url in "${VX_LAN_ORIGIN:-https://mac.local:3443}" "${VX_LAN_LIVEKIT_URL:-wss://mac.local:7443}"; do
+    port=${url##*:}; port=${port%%/*}; [[ "$port" =~ ^[0-9]+$ ]] && echo "$port"
+  done
+  cat "$LOGS/doors.ports" 2>/dev/null || true
+}
+stop_doors() {  # the doors stopped, by their ports too; their pass goes with them (no door: nothing may claim one). Their
+  # ports' record stays while anything still answers on one (the Phone tile says so), and goes once all are closed.
+  local ports port left=""; ports=$(door_ports | sort -u | tr '\n' ' '); stop doors $ports
+  rm -f "$ROOT/state/core/phone/door-pass"
+  for port in $ports; do if lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1; then left=1; fi; done
+  [ -n "$left" ] || rm -f "$LOGS/doors.ports"
+}
+
+call_live() {  # a call is on right now (call/agent.py touches state/core/call-live every 20 s)
+  local live="$ROOT/state/core/call-live"
+  [ -f "$live" ] && [ $(( $(date +%s) - $(stat -f %m "$live") )) -lt 60 ]
+}
+
+starting() {  # another ./vx up is at work right now (its pid is alive, and its lock is from since this Mac started)
+  [ -d "$LOGS/up.lock" ] && [ "$(stat -f %m "$LOGS/up.lock")" -ge "$BOOT" ] || return 1
+  local owner; owner=$(cat "$LOGS/up.lock/pid" 2>/dev/null || true)
+  [ -n "$owner" ] && [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null
+}
+
+take_up_lock() {  # one start at a time (before: the keeper and a person each started her, and each build wiped the other's;
+  # after five minutes a second start took a live lock, and two first runs downloaded at once). The lock is
+  # another start's while its run lives: never stale by age alone, only when its run is gone (or from before this Mac
+  # started). Meanwhile this one says how far that one is (logs/up.progress), so the app's window shows its progress.
+  local owner said last="" told=""
+  until mkdir "$LOGS/up.lock" 2>/dev/null; do
+    owner=$(cat "$LOGS/up.lock/pid" 2>/dev/null || true)
+    if starting; then
+      [ -n "$told" ] || { echo "  another start is at work: this one goes on with it"; told=1; }
+      said=$(cat "$LOGS/up.progress" 2>/dev/null || true)
+      if [ -n "$said" ] && [ "$said" != "$last" ]; then echo "  $said"; last=$said; fi
+      sleep 1
+    elif [ -z "$owner" ] && [ "$(stat -f %m "$LOGS/up.lock" 2>/dev/null || echo 0)" -ge "$BOOT" ] \
+        && [ $(( $(date +%s) - $(stat -f %m "$LOGS/up.lock" 2>/dev/null || echo 0) )) -lt 5 ]; then
+      sleep 1  # (just made by another start: its pid comes next)
+    else
+      rm -rf "$LOGS/up.lock"  # (its run is gone: it stopped part-way, or this Mac restarted since)
+    fi
+  done
+  echo $$ >"$LOGS/up.lock/pid"
+  # (two starts that both judged an old lock stale, after a restart, can each take one: whose it is now decides, and the
+  # other waits again)
+  sleep 0.3
+  if [ "$(cat "$LOGS/up.lock/pid" 2>/dev/null || true)" != "$$" ]; then take_up_lock; return 0; fi
+  rm -f "$LOGS/up.progress"
+}
+
+progress() {  # progress WHAT: what is downloading (and how far), for the app's window and any start waiting on this one
+  echo "  download: $*"
+  echo "download: $*" >"$LOGS/up.progress" 2>/dev/null || true
+}
+
+recover_restore() {  # before a profile is read or any part starts: never run on a half-restored state
+  restore_pending || return 0
+  if running agent || running chat || running clock || nc -z 127.0.0.1 "$UI_PORT" 2>/dev/null; then
+    echo "  An interrupted restore is pending. Stop Viventium before starting it again."; exit 1
+  fi
+  (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup recover) || {
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup reason)
+    exit 1
+  }
+  (cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings phone-off)
+}
+
+prepare_hearing() {
+    # SHA-256 values from the two upstream Hugging Face LFS entries.
+    fetch "$HOME/.cache/whisper/ggml-large-v3-turbo.bin" https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo.bin hearing \
+      1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69
+    fetch "$HOME/.cache/whisper/ggml-silero-v5.1.2.bin" https://huggingface.co/ggml-org/whisper-vad/resolve/9ffd54a1e1ee413ddf265af9913beaf518d1639b/ggml-silero-v5.1.2.bin hearing \
+      29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf
+    start stt 8930 whisper-server -m "$HOME/.cache/whisper/ggml-large-v3-turbo.bin" --host 127.0.0.1 \
+      --port 8930 --inference-path /v1/audio/transcriptions -l en -nt -sns -mc 0 -t 6 \
+      --vad --vad-model "$HOME/.cache/whisper/ggml-silero-v5.1.2.bin"  # no "Thank you." on noise; -mc 0: no loops
+}
+
+up() {
+  take_up_lock  # (one start at a time: a second one waits for the first, saying how far it is, then looks again)
+  recover_restore
+  local was; was="$(cat "$LOGS/profile" 2>/dev/null || true)"
+  rm -f "$LOGS/stopped" "$LOGS/blocked"  # (./vx down leaves the first, so the keeper lets her rest; the second is this run's)
+  # No place chosen yet, ever: the first run. She starts on Local, or on Hybrid when one of your subscriptions is signed in
+  # by the time she starts (first_choice, after the downloads); kept until then, through a run that stops part-way.
+  if [ -z "${1:-}" ] && [ -z "$was" ]; then touch "$LOGS/.first-run"; fi
+  load_profile "${1:-${was:-local}}"
+  # What this profile needs that this Mac lacks, asked or said before anything stops, starts or downloads. Homebrew and
+  # its tools are the first download, so this is the one time the space is asked (before, a small
+  # Mac that passed here was asked again after Homebrew had used 3 GB of the same budget, and stopped).
+  preflight up
+  if [ -n "${SMALL_MAC_TIER:-}" ]; then
+    if needs_setup; then
+      brewed
+      if [ ! -x "$ROOT/.venv/bin/python" ]; then
+        progress "Viventium's parts"
+        (cd "$ROOT" && fetching "her Python parts" uv sync --locked --group test --quiet)
+      fi
+    fi
+    preflight up
+  fi
+  shared check || true; shared record
+  # (the first run in Terminal: what only a terminal can ask, Homebrew's password, a key, a sign-in, is asked there
+  # before the app takes over; from the app, a key that is missing stops here, before any download, with its way on)
+  if needs_setup; then
+    brewed; harnesses
+    if [ -z "${VX_FROM_APP:-}" ]; then require_small_mac_sign_in; ask_keys; sign_in; hand_off; fi
+    setup background
+    shared check || true
+  else
+    harnesses
+  fi
+  app_first_choice
+  require_small_mac_sign_in
+  small_voice
+  ask_keys; sign_in
+  grok_harness
+  # Update every existing install before xPerfect can recover saved work (including retired plan jobs).
+  prepare_xperfect
+  livekit_keys; phone_key; own_folders  # (before anything starts: no part of a call on a published key, no open state)
+  if held_by_other; then rm -rf "$LOGS/up.lock"; exit 1; fi  # (before the switch below stops anything)
+  # Switching profile restarts what it changes (a running agent would keep the old profile's models).
+  if [ -n "$was" ] && [ "$was" != "$PROFILE" ] && running agent; then
+    echo "Switching from $was to $PROFILE"; settle
+  fi
+  codex_home
+  echo "stage: starting"
+  echo "Starting Viventium AI ($PROFILE)"
+  life_folder
+  local greeting_drafting=""
+  if [ "$QUEEN" != ollama ]; then
+    [ "$QUEEN" = chatgpt_plan ] || draft_first_greeting
+    greeting_drafting=yes
+  fi
+  # Start only the local pieces this profile uses; their models download the first time.
+  if [ "$STT" = whisper_local ]; then
+    start hearing-setup - "$ROOT/vx" setup-hearing "$PROFILE"
+  fi
+  export VX_SHARED_HF_CACHE="${VX_SHARED_HF_CACHE:-${HF_HUB_CACHE:-}}"
+  export HF_HUB_CACHE="${VX_STATE:-$ROOT/state}/downloads/hub"
+  if [ "$STT" != off ] || [ "${STT_AUTO:-}" = 1 ]; then
+    start hearing-files - python3 "$ROOT/core/downloads.py" hearing
+  fi
+  if local_voice; then
+    # Both the voice and its nested tokenizer resolve only inside Light's verified cache.
+    if ! running tts; then python3 "$ROOT/core/downloads.py" voice --pending; fi
+    start tts 8940 env VX_PREPARE_VOICE=1 "$ROOT/speech/tts/run.sh"
+  fi
+  # qwen3.6 (qwen35moe) serves one request at a time, so the Queen and local Workers each get their
+  # own server (same model files) and the Queen never waits behind a Worker. Hers stays warm; the
+  # background one lets its copy (about 22 GB) go after 10 idle minutes, for this Mac's other work,
+  # and loads again for the next job.
+  # (the background one first: on the first run it downloads the model both use, before first_choice)
+  if [ "${WORKERS:-}" = local ] || [ -n "${WORKERS_LOCAL:-}" ] || [[ "${FEELINGS_URL:-}${MEMORY_URL:-}" == *:11436* ]]; then  # Workers, Feelings, memory
+    serve_model worker-model 11436 "$(if [ -n "${SMALL_MAC_TIER:-}" ]; then echo "$MEMORY_MODEL"
+      else grep -m1 '^model *=' "$ROOT/brain/codex-home-local/config.toml" | cut -d'"' -f2; fi)" 10m
+  fi
+  first_choice  # (the first run: Local or Hybrid, now that what both need is here and before anything that differs starts)
+  if [ "$QUEEN" = ollama ]; then serve_model model 11435 "$QUEEN_MODEL" -1 2; fi
+  [ -n "$greeting_drafting" ] || draft_first_greeting
+  # LiveKit on Light's own key (no --dev: that ran it on the published sample key, with debug pages; without a key of
+  # its own it now refuses to start). The key's name rides on the command line so a new key restarts it; never its secret.
+  # Calling from his phone on the same Wi-Fi: LiveKit's sound offered on this Mac's network address too, and the page's
+  # two doors (phone_parts); off, LiveKit offers its sound on this computer alone (call/livekit.yaml).
+  # (its settings' checksum rides on its command line too, as the key's name does: changed settings restart it once)
+  local phone made; made=$(phone_parts); phone=$(sed -n 1p <<<"$made")
+  local livekit_config="${phone:-call/livekit.yaml}" livekit_sum; livekit_sum=$(cd "$ROOT" && shasum < "$livekit_config" | cut -c1-12)
+  LIVEKIT_KEYS="$LK_KEY: $LK_SECRET" start livekit 7880 env VX_LIVEKIT_KEY_NAME="$LK_KEY" VX_LIVEKIT_SETTINGS="${livekit_sum:-}" \
+    livekit-server --config "${livekit_config:-call/livekit.yaml}" --bind 127.0.0.1
+  # One xPerfect per place: this profile's Workers', and beside it the one of the Workers on this Mac when you
+  # ticked them together with online ones (XPERFECT_LOCAL_STATE). Any other is stopped.
+  for state in "$ROOT"/brain/state-*; do
+    [ "$state" = "$XPERFECT_STATE" ] || [ "$state" = "${XPERFECT_LOCAL_STATE:-}" ] || xp_stop "$state"
+  done
+  # Each job's background Queen is xPerfect's native coordinator, on this profile's Worker harness;
+  # a changed WORKER_PROFILE restarts xPerfect so it takes effect.
+  if [ "$(coordinator)" = changed ]; then xp_stop "$XPERFECT_STATE"; fi
+  # First start sets the xPerfect UI unlock password from the private file; later starts ignore it.
+  local xp_before xp_source
+  xp_before=$(xp_supervisor "$XPERFECT_STATE" || true); xp_source=$(source_identity)
+  if "$ROOT/brain/xperfect/xperfect" start --state-dir "$XPERFECT_STATE" --unlock-password-stdin \
+      < "$XPERFECT_STATE/unlock-password" >"$LOGS/xperfect.log" 2>&1; then
+    echo "  workers: ready"; xp_record "$XPERFECT_STATE" "$xp_before" "$xp_source"
+  else echo "  her Workers did not start; see logs/xperfect.log"; exit 1; fi
+  if [ -n "${XPERFECT_LOCAL_STATE:-}" ]; then  # (its own settings: never the online Workers' efforts or manager)
+    if [ "$(WORKER_EFFORT_CLAUDE_CODE= WORKER_EFFORT_CODEX_CLI= WORKER_EFFORT_GROK_BUILD= MANAGER_PROFILE= MANAGER_EFFORT= \
+        coordinator "$XPERFECT_LOCAL_STATE" "${WORKERS_LOCAL_PROFILE:-claude-code}" local)" = changed ]; then xp_stop "$XPERFECT_LOCAL_STATE"; fi
+    xp_before=$(xp_supervisor "$XPERFECT_LOCAL_STATE" || true); xp_source=$(source_identity)
+    if "$ROOT/brain/xperfect/xperfect" start --state-dir "$XPERFECT_LOCAL_STATE" --unlock-password-stdin \
+        < "$XPERFECT_LOCAL_STATE/unlock-password" >"$LOGS/xperfect-local.log" 2>&1; then echo "  workers on this Mac: ready"
+      xp_record "$XPERFECT_LOCAL_STATE" "$xp_before" "$xp_source"
+    else echo "  the Workers on this Mac did not start; see logs/xperfect-local.log"; exit 1; fi
+  fi
+  # Keys go to the voice agent only; Workers keep their own Codex / Claude Code sign-ins.
+  # Local model files only (no Hugging Face update checks).
+  start_agent
+  # The doorbell xPerfect's clock rings when a moment has come (core/doorbell.py); it also keeps xPerfect's list
+  # like Light's. No key of yours: its own signing secret, in the Keychain.
+  start doorbell 8869 "$ROOT/.venv/bin/python" -m core.doorbell
+  start_chat
+  # (the doors start again when what they are changes: the phone's ports, what they lead to, the network, the certificate)
+  if [ -n "$phone" ]; then
+    door_ports | head -2 >"$LOGS/doors.ports.new"
+    start doors - env UI_PORT="$UI_PORT" LIVEKIT_URL="${LIVEKIT_URL:-ws://127.0.0.1:7880}" VX_LAN_ORIGIN="$VX_LAN_ORIGIN" \
+      VX_LAN_LIVEKIT_URL="${VX_LAN_LIVEKIT_URL:-}" VX_LAN_NETWORK="${VX_LAN_NETWORK:-}" VX_DOORS_CERT="$(sed -n 2p <<<"$made")" \
+      "$ROOT/.venv/bin/python" -m call.phone doors
+    mv -f "$LOGS/doors.ports.new" "$LOGS/doors.ports"
+  else stop_doors; fi
+  # The app, new when its source is (never a reason not to start her; never from her keeper's own round: VX_KEEPING).
+  # (a build that failed was silent, and "ready" read as if the app were there)
+  [ -n "${VX_KEEPING:-}" ] || helper >>"$LOGS/menubar-build.log" 2>&1 || \
+    echo "  The Viventium AI app could not be built (logs/menubar-build.log); Viventium runs, and ./vx up starts it."
+  [ -n "${VX_FROM_APP:-}" ] || menubar start
+  # Her standing knowledge of you, rebuilt from Life at most daily, in the background.
+  if [ -n "${LIFE:-}" ] && [ -n "${MEMORY_URL:-}" ]; then start_life_core; fi
+  # Her memory by meaning: the index of Life's text is brought up to date (only what changed), in the background.
+  if [ -n "${LIFE:-}" ] && [ "${MEMORY_EMBED:-}" != off ]; then
+    if [ -n "${VX_FROM_APP:-}" ] && [ ! -f "$LOGS/.first-ready" ]; then
+      start setup-memory - "$ROOT/vx" setup-memory "$PROFILE"
+    else
+      serve_embed; start life-index - "$ROOT/.venv/bin/python" -m core.memory refresh
+    fi
+  fi
+  # Photo and video models already on this Mac and whole, never proved (weights from before proofs were kept):
+  # proved now, in the background, read exactly as Install reads them. Nothing is downloaded, removed or chosen.
+  start media-check - "$ROOT/.venv/bin/python" -m settings recognize
+  # The call page: a production build served on this computer only. No dev server, so no Next.js
+  # version check; no telemetry; rebuilt only when its source changed.
+  local ui="$ROOT/call/ui" next="$ROOT/call/ui/node_modules/.bin/next"
+  build_page "$ui" "$next" || exit 1
+  start_ui "$next" "$ui"
+  wait_port livekit 7880 20
+  wait_port ui $UI_PORT 60
+  # A call only reaches an agent that registered before the room opened.
+  wait_agent || exit 1
+  key_proof || { echo "  Calls are not on Light's own key yet: ./vx restart"; exit 1; }
+  curl -s -o /dev/null "http://localhost:$UI_PORT" || true  # first request warms the server
+  # (her mind's own answer, last: a running part that cannot answer is not ready. A start whose mind does not answer leaves
+  # her parts up, the page among them, where another is chosen, with the reason: never half; it exits 3 or 4, mind_answers)
+  local unanswered=0; mind_answers || unanswered=$?
+  if [ "$unanswered" != 0 ]; then
+    rm -rf "$LOGS/up.lock" "$LOGS/up.progress"
+    if [ "$unanswered" = 5 ]; then
+      [ "${VX_NO_OPEN:-}" = 1 ] || open "http://localhost:$UI_PORT"
+      return 0
+    fi
+    exit "$unanswered"
+  fi
+  echo "Ready: http://localhost:$UI_PORT"  # (her page opens in the conversation: nothing to press first, one path)
+  if running chat; then echo "  Telegram: on"; else echo "  Telegram: not connected (./vx telegram)"; fi
+  echo "  Its Workers, to watch or steer: http://127.0.0.1:$(xp_ports "$XPERFECT_STATE" ui)"
+  [ -z "${XPERFECT_LOCAL_STATE:-}" ] || echo "  The ones on this Mac: http://127.0.0.1:$(xp_ports "$XPERFECT_LOCAL_STATE" ui)"
+  rm -rf "$LOGS/up.lock" "$LOGS/up.progress"
+  [ "${VX_NO_OPEN:-}" = 1 ] || open "http://localhost:$UI_PORT"
+}
+
+stamp_page() {
+  local stamp="$1/vx-source"
+  (umask 077; printf '%s\n%s\n' "$3" "$2" >"$stamp.new" &&
+    mv -f "$stamp.new" "$stamp") || echo "  ui: could not record build source"
+}
+
+page_build_complete() {  # Next can write BUILD_ID before it finishes writing the files next start needs
+  [ -d "$1/.next/static" ] || return 1
+  (cd "$1" && node - >/dev/null 2>&1 <<'JS'
+  const { readFileSync, statSync } = require('node:fs');
+  const { files } = JSON.parse(readFileSync('.next/required-server-files.json', 'utf8'));
+  if (!Array.isArray(files) || files.length === 0) process.exit(1);
+  for (const file of files) {
+    const stat = statSync(file);
+    if (!stat.isFile() || stat.size === 0) process.exit(1);
+    if (file.endsWith('.json')) JSON.parse(readFileSync(file, 'utf8'));
+  }
+JS
+  )
+}
+
+build_page() {  # a production build and its source stamp are kept together
+  local ui=$1 next=$2 id identity pending="$LOGS/ui-build.pending"
+  id=$(cat "$ui/.next/BUILD_ID" 2>/dev/null || true)
+  if [ -n "$id" ] && [ ! -e "$pending" ] && [ -z "$(find "$ui/app" "$ui/components" "$ui/hooks" "$ui/lib" "$ui/styles" "$ui/fonts" \
+      "$ui/public" "$ui/next.config.ts" "$ui/package.json" "$ui/pnpm-lock.yaml" "$ui/postcss.config.mjs" \
+      "$ui/tsconfig.json" -newer "$ui/.next/BUILD_ID" -print -quit 2>/dev/null)" ] && page_build_complete "$ui"; then
+    # A build without its stamp tells us when it was built, but cannot prove which checkout built it.
+    [ -n "$(page_source "$id")" ] || stamp_page "$ui/.next" "$id" "unknown unknown"
+    return 0
+  fi
+  echo "  ui: building"
+  stop ui "$UI_PORT" || return 1  # a clean build; a running server must not write into it
+  identity=$(source_identity)
+  mine "$pending"  # Next can write BUILD_ID before finishing; it proves nothing if this build did not finish
+  # (.next-test/types: a test build's generated types may refer to a page that was removed)
+  (cd "$ui" && rm -rf .next .next-test/types && NEXT_TELEMETRY_DISABLED=1 "$next" build >"$LOGS/ui-build.log" 2>&1) \
+    || { echo "  ui build failed; see logs/ui-build.log"; return 1; }
+  rm -f "$pending"
+  id=$(cat "$ui/.next/BUILD_ID" 2>/dev/null || true)
+  if [ -n "$id" ]; then stamp_page "$ui/.next" "$id" "$identity"; else echo "  ui: could not record build source"; fi
+}
+
+telegram() {  # your own Telegram bot: its token, once, then the same pairing used in Settings
+  echo "In Telegram, message @BotFather, send /newbot and answer its two questions. It gives you a token."
+  echo "Paste the token below, twice (hidden; kept only in this Mac's Keychain)."
+  security add-generic-password -U -s viventium-light/telegram_bot_token -a viventium-light -w || exit 1
+  local bot id username pairing  # (the token reaches Telegram's own API only)
+  bot=$(TELEGRAM_BOT_TOKEN="$(security find-generic-password -s viventium-light/telegram_bot_token -w)" \
+    "$ROOT/.venv/bin/python" -c "import os, httpx
+r = httpx.get('https://api.telegram.org/bot' + os.environ['TELEGRAM_BOT_TOKEN'] + '/getMe', timeout=20).json()
+if r.get('ok'):
+    print(r['result']['id'], r['result']['username'])" 2>/dev/null || true)
+  [ -n "$bot" ] || { echo "Telegram didn't accept that token. Copy it again from @BotFather and run ./vx telegram again."; exit 1; }
+  read -r id username <<<"$bot"
+  if [ -n "${TELEGRAM_TOKEN_ITEM:-}" ]; then
+    echo "  note: profiles/machine.local.env sets TELEGRAM_TOKEN_ITEM; remove that line to use @$username."
+  fi
+  if running agent; then stop chat; start_chat; fi
+  if [ -z "${TELEGRAM_TOKEN_ITEM:-}" ] && pairing=$(cd "$ROOT" && "$ROOT/.venv/bin/python" -c '
+import sys
+from core import telegram_approvals as pairing
+bot, username = sys.argv[1:]
+if not pairing.ready(bot):
+    print(pairing.pairing_link(bot, username))
+' "$id" "$username"); then
+    if [ -z "$pairing" ]; then
+      echo "Your chat is paired. Open @$username in Telegram."
+    elif open "$pairing"; then
+      echo "Press Start in Telegram to pair this chat."
+    else
+      echo "Pair this chat from Light’s Settings under Telegram."
+    fi
+  else
+    echo "Pair this chat from Light’s Settings under Telegram."
+  fi
+}
+
+xp_supervisor() {  # xp_supervisor STATE: the pid of this state's xPerfect supervisor, proved by the kernel and xPerfect's own
+  # records, never by which process opened a file first: the process serving the state's control socket (the kernel names
+  # it, LOCAL_PEERPID), which says this state runs from this checkout and has the state's service.lock open (only the
+  # lock's holder ever serves that socket: scripts/host.py serve() locks first, and returns when it cannot)
+  [ -n "$(lsof -t "$1/service.lock" 2>/dev/null)" ] || return 1  # (no process has its lock file open: none runs)
+  local pid
+  pid=$("$ROOT/.venv/bin/python" - "$(cd "$1" 2>/dev/null && pwd -P)" "$(cd "$ROOT/brain/xperfect" 2>/dev/null && pwd -P)" \
+        "${VX_XPERFECT_SOCKETS:-/tmp/xperfect-$(id -u)}" 2>/dev/null <<'PY'
+import hashlib, json, socket, sys
+state, checkout, folder = sys.argv[1:4]
+if not state or not checkout:
+    sys.exit(1)
+where = f"{folder}/{hashlib.sha256(state.encode()).hexdigest()[:24]}.sock"  # (scripts/host.py control_path)
+try:
+    with socket.socket(socket.AF_UNIX) as asked:
+        asked.settimeout(3)
+        asked.connect(where)
+        server = asked.getsockopt(0, 2)  # (SOL_LOCAL, LOCAL_PEERPID: the pid serving this socket, from the kernel)
+        asked.sendall(b"status")
+        said = json.loads(asked.recv(65536))
+except (OSError, ValueError):
+    sys.exit(1)
+if said.get("status") != "running" or said.get("checkout") != checkout or server <= 0:
+    sys.exit(1)
+print(server)
+PY
+) || return 1
+  [ -n "$pid" ] && lsof -a -p "$pid" -- "$1/service.lock" >/dev/null 2>&1 && echo "$pid"
+}
+xp_record() {  # xp_record STATE: the records that prove this state's xPerfect: vx's launch record for its supervisor (the
+  # pid xp_supervisor proves: after vx started it, or the first look after an update) and, while that supervisor is
+  # proven, one for each service it started (pid and start time), refreshed at every look
+  local name=${1##*/} sup child launch_source="" launch_build_source="" record lock
+  [ -f "$1/service.lock" ] || return 0
+  lock="$LOGS/$name.launch.lock"; mine "$lock"
+  (
+    # up and keep look can both prove the same supervisor. Keep the lock on the shell's open file
+    # until all its records are written, so a look cannot replace the identity up just recorded.
+    "$ROOT/.venv/bin/python" -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' || exit 1
+    sup=$(xp_supervisor "$1") || exit 0
+    record="$LOGS/launched/$sup"
+    if launch_holds "$sup" "xp:$name"; then launch_source=$(sed -n 4p "$record"); fi
+    if [ -z "$launch_source" ] && [ -n "${3:-}" ] && [ "$sup" != "$2" ]; then
+      launch_source=$3; launch_build_source=$(source_identity "$ROOT/brain/xperfect")
+      launched "$sup" "xp:$name" xperfect
+    else
+      launch_holds "$sup" "xp:$name" || launched "$sup" "xp:$name" xperfect
+    fi
+    launch_build_source=""  # the supervisor's record holds the xPerfect build identity
+    for child in $(pgrep -P "$sup" 2>/dev/null); do
+      if ! launch_holds "$child" "xp-service:$name" ||
+          { [ -n "$launch_source" ] && [ -z "$(sed -n 4p "$LOGS/launched/$child")" ]; }; then
+        launched "$child" "xp-service:$name" xperfect-service
+      fi
+    done
+  ) 9<>"$lock"
+}
+xp_own() {  # xp_own STATE PID: one of this state's xPerfect processes, by its record alone (its pid with the same start
+  # time): the supervisor, or a service recorded while that supervisor was proven, also once the supervisor is gone.
+  # Nothing is inferred from when a process started, nor from its arguments.
+  launch_holds "$2" "xp:${1##*/}" || launch_holds "$2" "xp-service:${1##*/}"
+}
+xp_on_port() {  # xp_on_port NAME STATE, for keep: that xPerfect's API is up (its own, by its records), else gone or held
+  local port pid found=""; port=$(xp_ports "$2" api)
+  xp_record "$2"
+  for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null); do
+    if xp_own "$2" "$pid"; then return 0; fi
+    found=held
+  done
+  if [ -z "$found" ] && nc -z 127.0.0.1 "$port" 2>/dev/null; then found=held; fi
+  if [ "$found" = held ]; then held="$held $1"; else gone="$gone $1"; fi
+}
+xp_stop() {  # xp_stop STATE_DIR: stop that xPerfect; then end any of its own services its supervisor left behind
+  # (the supervisor was gone, "xPerfect is stopped", yet its API still held 8866 and the next start failed), each
+  # proved its own by its record (xp_own), never by its arguments or its start time alone
+  xp_record "$1" || true  # shutdown uses the records it has if it cannot refresh them
+  "$ROOT/brain/xperfect/xperfect" stop --state-dir "$1" >/dev/null 2>&1 || true
+  local pid port ports; ports=$(xp_ports "$1")
+  for port in $ports; do
+    for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null); do
+      if xp_own "$1" "$pid"; then kill -TERM "$pid" 2>/dev/null || true; fi
+    done
+  done
+  for _ in $(seq 1 20); do
+    local left=""
+    for port in $ports; do for pid in $(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null); do xp_own "$1" "$pid" && left=1; done; done
+    [ -n "$left" ] || break; sleep 0.5
+  done
+  local record  # (the records of what is gone go with it)
+  for record in "$LOGS"/launched/*; do
+    [ -f "$record" ] || continue
+    case "$(sed -n 1p "$record")" in "xp:${1##*/}"|"xp-service:${1##*/}") launch_holds "${record##*/}" || rm -f "$record" ;; esac
+  done
+}
+
+restart() {  # restart [PROFILE]: checked first, once, before anything stops (what keeps it from starting is said, and
+  # nothing stops; before, it was asked twice), and another program on LiveKit's or the page's port too; then only
+  # what changes stops (settle) and she starts on it. A new mind that then does not answer leaves her new parts up with
+  # the reason (mind_answers, exit 3 or 4): never half.
+  recover_restore
+  local profile="${1:-$(cat "$LOGS/profile" 2>/dev/null || echo local)}" said
+  said=$("$ROOT/vx" ready "$profile" 2>&1) || { echo "$said"; exit 1; }
+  if held_by_other; then exit 1; fi
+  load_profile "$profile"; livekit_keys; phone_key; own_folders; settle; up "$profile"
+}
+
+down() {  # (VX_KEEP_UI=1: a restart from the settings page keeps the page up, to show how it went.)
+  # A start at work (the app's, Terminal's or the keeper's) is stopped first, so nothing comes up after this (before,
+  # Quit stopped only the app's own); what it was downloading goes on from there at the next start.
+  local owner group
+  owner=$(cat "$LOGS/up.lock/pid" 2>/dev/null || true)
+  if [ -n "$owner" ] && [ "$owner" != "$$" ] && kill -0 "$owner" 2>/dev/null; then
+    group=$(ps -o pgid= -p "$owner" 2>/dev/null | tr -d ' ')
+    if [ -n "$group" ] && [ "$group" != "$(ps -o pgid= -p $$ | tr -d ' ')" ]; then kill -TERM -- "-$group" 2>/dev/null || true
+    else pkill -TERM -P "$owner" 2>/dev/null || true; kill -TERM "$owner" 2>/dev/null || true; fi
+    for _ in 1 2 3 4 5; do kill -0 "$owner" 2>/dev/null || break; sleep 1; done
+    rm -rf "$LOGS/up.lock"
+  fi
+  [ "${VX_KEEP_UI:-}" = 1 ] || stop ui "$UI_PORT"
+  stop hearing-setup
+  stop chat; stop clock; stop agent; stop doorbell 8869; stop livekit 7880; stop tts 8940; stop stt 8930
+  stop hearing-files
+  stop setup-memory; stop life-index; stop model 11435; stop worker-model 11436; stop embed-model 11437; stop_doors
+  for state in "$ROOT"/brain/state-*; do
+    if [ -f "$state/config.json" ]; then xp_stop "$state"; fi
+  done
+  echo "Stopped."
+}
+
+status() {
+  if restore_pending; then
+    printf 'restore reason: '
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup reason)
+    if (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup blocked); then echo 'restore blocked: yes'; fi
+    return 0
+  fi
+  echo "profile: $(cat "$LOGS/profile" 2>/dev/null || echo none)"
+  for pair in model:11435 worker-model:11436 embed-model:11437 stt:8930 tts:8940 livekit:7880 ui:$UI_PORT; do
+    name=${pair%%:*}; port=${pair##*:}
+    case "$(holder "$port")" in
+      ours) echo "  $name: up ($port)" ;;
+      other) echo "  $name: not started: port $port is held by another program, not this Viventium (quit it, then ./vx up)" ;;
+      *) echo "  $name: down" ;;
+    esac
+  done
+  if running agent; then echo "  agent: up"
+    # (up, but a start at work has not written its own verdict yet: not ready until it does, and not "not answering"
+    # either; on a clean Mac her parts were up 15 s before the verdict, and the menu bar showed her ready. No start
+    # at work, or one whose run is gone: the last verdict as it stands, and none ever written reads as her parts)
+    if starting && [ ! "$LOGS/mind-answer" -nt "$LOGS/up.lock" ]; then echo "  mind: not asked yet (a start is at work)"
+    # (up, but her mind did not answer when last asked: not ready until a verdict says it does, mind_answers)
+    elif [ -s "$LOGS/mind-answer" ]; then
+      case "$(awk 'NR == 1 {print $1}' "$LOGS/mind-answer")" in
+        answered) ;;
+        connected)
+          local mind_state="${VX_STATE:-$ROOT/state}/core" since="$LOGS/mind-answer" reason=""
+          [ ! -s "$LOGS/agent.pid" ] || since="$LOGS/agent.pid"
+          if [ ! "$mind_state/mind-answered" -nt "$since" ]; then
+            if [ "$mind_state/mind-first-failure" -nt "$since" ] && [ -s "$mind_state/mind-first-failure" ]; then
+              echo "  mind: not answering"
+              echo "  mind reason: $(sed -n 1p "$mind_state/mind-first-failure")"
+            else
+              reason=$(cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings.probe connection 2>/dev/null) ||
+                reason="ChatGPT's connection could not be checked."
+              if [ -n "$reason" ]; then
+                echo "  mind: not answering"
+                echo "  mind reason: $reason"
+              else
+                echo "  mind: connected, awaiting first answer"
+              fi
+            fi
+          fi ;;
+        *) echo "  mind: not answering" ;;
+      esac
+    fi
+  else echo "  agent: down"; fi
+  running chat && echo "  telegram: up" || echo "  telegram: off"
+  if running clock; then echo "  clock: up (reminders, with no Telegram bot)"; fi
+  if running doors; then echo "  phone: on ($(door_ports | head -2 | tr '\n' ' ')calls from your phone on this Wi-Fi)"; fi
+  nc -z 127.0.0.1 8869 2>/dev/null && echo "  doorbell: up (8869; xPerfect's clock rings it)" || echo "  doorbell: down (Light rings its reminders itself)"
+  local online=down here=down  # her Workers' xPerfect: the online ones', and the one of the Workers on this Mac
+  if nc -z 127.0.0.1 8866 2>/dev/null; then online=up; echo "  xperfect: up (8866, UI 8880)"; fi
+  if nc -z 127.0.0.1 8876 2>/dev/null; then here=up; echo "  xperfect, Workers on this Mac: up (8876, UI 8890)"; fi
+  if [ "$online$here" = downdown ]; then echo "  xperfect: down"; fi
+  source_status
+}
+
+source_line() {  # label, recorded identity, current checkout commit
+  local commit dirty stale=""
+  read -r commit dirty <<< "$2"
+  if [[ ! "$commit" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then echo "  source $1: source unknown"; return; fi
+  case "$dirty" in clean|dirty|packaged) ;; *) dirty="dirty state unknown" ;; esac
+  if [ "$3" != unknown ] && [ "$commit" != "$3" ]; then stale=" [stale]"; fi
+  printf '  source %s: %s (%s)%s\n' "$1" "$commit" "$dirty" "$stale"
+}
+
+tool_ready() {  # A stock Mac's Apple executables can be installer stubs. Resolve without running them.
+  local tool
+  tool=$(command -v "$1") || return 1
+  case "$tool" in
+    /usr/bin/python3|/usr/bin/git|/usr/bin/swiftc|/usr/bin/cc|/usr/bin/clang|/usr/bin/make)
+      xcode-select -p >/dev/null 2>&1 ;;
+    *) return 0 ;;
+  esac
+}
+
+source_status() {
+  # Status runs during first setup too, before Homebrew's Python and Git exist.
+  if ! tool_ready python3 || { [ -z "${RELEASE:-}" ] && ! tool_ready git; }; then
+    echo "  source: waiting for system tools"; return 0
+  fi
+  local revisions head file name pid record id identity state child xp_head app_root note
+  if [ -n "${RELEASE:-}" ]; then
+    head=${RELEASE%% *}; xp_head=$(cat "$ROOT/brain/xperfect.pin")
+  else
+    revisions=$(git -C "$ROOT" rev-parse --revs-only HEAD HEAD:brain/xperfect 2>/dev/null || true)
+    head=$(sed -n 1p <<<"$revisions"); xp_head=$(sed -n 2p <<<"$revisions")
+  fi
+  head=${head:-unknown}; xp_head=${xp_head:-unknown}
+  printf '  source checkout HEAD %s\n' "$head"
+  if [ -f "$ROOT/brain/xperfect.files.json" ]; then
+    if xperfect_source_clean "$head" "$xp_head" >/dev/null 2>&1; then
+      echo "  source xPerfect files: verified pin and patches"
+    else echo "  source xPerfect files: not verified; keep this copy and install a fresh copy of Light"; fi
+  fi
+  for file in "$LOGS"/*.pid; do
+    [ -f "$file" ] || continue
+    name=${file##*/}; name=${name%.pid}
+    pid=$(own_pid "$name") || continue
+    record="$LOGS/launched/$pid"
+    source_line "$name" "$(sed -n 4p "$record" 2>/dev/null || true)" "$head"
+    case "$name" in
+      ui) id=$(sed -n 5p "$record" 2>/dev/null || true)
+          [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || id=unknown
+          source_line "running page build ${id:-unknown}" "$(sed -n 6p "$record" 2>/dev/null || true)" "$head" ;;
+      menubar) source_line 'running menu bar build' "$(sed -n 6p "$record" 2>/dev/null || true)" "$head" ;;
+    esac
+  done
+  for state in "$ROOT"/brain/state-*; do
+    [ -f "$state/service.lock" ] || continue
+    pid=$(xp_supervisor "$state") || continue
+    name=${state##*/}
+    for child in "$pid" $(pgrep -P "$pid" 2>/dev/null); do
+      identity=""
+      if xp_own "$state" "$child"; then identity=$(sed -n 4p "$LOGS/launched/$child"); fi
+      source_line "Workers $name (PID $child)" "$identity" "$head"
+    done
+    identity=""
+    if xp_own "$state" "$pid"; then identity=$(sed -n 6p "$LOGS/launched/$pid"); fi
+    source_line "xPerfect $name" "$identity" "$xp_head"
+  done
+  id=$(cat "$ROOT/call/ui/.next/BUILD_ID" 2>/dev/null || true)
+  if [ -n "$id" ]; then
+    identity=$(page_source "$id")
+    [[ "$id" =~ ^[A-Za-z0-9._-]+$ ]] || id=unknown
+    source_line "page build $id" "$identity" "$head"
+  fi
+  if [ -x "$APP/Contents/MacOS/Viventium" ]; then
+    app_root=$(app_value ViventiumRoot)
+    if [ -n "$app_root" ] && [ "$app_root" != "$ROOT" ]; then
+      source_line 'installed app (another checkout)' "$(app_value ViventiumSource)" unknown
+    else source_line 'installed app' "$(app_value ViventiumSource)" "$head"; fi
+  fi
+  note="$HOME/Library/Application Support/Viventium Light/keep.json"
+  if kept && [ -s "$note" ] && [ "$(plutil -extract root raw "$note" 2>/dev/null || true)" = "$ROOT" ]; then
+    pid=$(launchctl list 2>/dev/null | awk -v name="$KEEPER" '$3 == name {print $1}' || true)
+    if [ -n "$pid" ] && [ "$pid" != - ] && [ "$(plutil -extract pid raw "$note" 2>/dev/null || true)" = "$pid" ]; then
+      source_line 'running keeper app build' "$(plutil -extract source raw "$note" 2>/dev/null || true)" "$head"
+    fi
+  fi
+}
+
+keep() {  # what autostart runs: brings back any part of her that stopped, on the profile she last ran
+  # Never during a test run (it swaps her agent) or after ./vx down (stay down until ./vx up).
+  tests_running && return 0
+  if [ "${1:-}" != look ]; then  # (./vx keep look: only say which parts are missing; ./vx doctor asks)
+    starting && return 0  # (a start is at work this minute: what looks gone is being brought up)
+    [ -f "$LOGS/stopped" ] && return 0
+    if restore_pending && (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup blocked); then
+      return 0  # a failed recovery waits for the person's one explicit retry or another backup
+    fi
+    recover_restore
+    [ -f "$LOGS/settings-pending.json" ] && return 0  # (a settings change is restarting her this minute: not gone)
+    kept || menubar start  # (her mark stays while she rests: it is how you start her again; the keeper app shows its own)
+  fi
+  local profile gone="" held=""; profile="$(cat "$LOGS/profile" 2>/dev/null || echo local)"
+  load_profile "$profile"
+  running agent || gone="$gone agent"
+  if [ -f "$LOGS/chat.pid" ] && ! running chat; then gone="$gone telegram"; fi
+  if [ ! -f "$LOGS/chat.pid" ] && ! running clock; then gone="$gone clock"; fi  # (no bot: the clock is its own process)
+  on_port doorbell 8869
+  if [ -n "${VX_LAN_ORIGIN:-}" ] && ! running doors; then gone="$gone doors"; fi
+  # (a new address on his network: LiveKit offers the phone's sound where nothing answers; started again, never in a call)
+  if [ -n "${VX_LAN_ORIGIN:-}" ] && ! call_live && (cd "$ROOT" && "$ROOT/.venv/bin/python" -m call.phone moved); then
+    gone="$gone phone-address"
+  fi
+  on_port livekit 7880
+  on_port ui "$UI_PORT"
+  xp_on_port workers "$XPERFECT_STATE"  # (xPerfect starts its own services: proved by its records, xp_own)
+  if [ -n "${XPERFECT_LOCAL_STATE:-}" ]; then xp_on_port workers-on-this-mac "$XPERFECT_LOCAL_STATE"; fi
+  if [ -n "${LIFE:-}" ] && [ "${MEMORY_EMBED:-}" != off ]; then on_port embed-model 11437; fi
+  if [ "$QUEEN" = ollama ]; then on_port model 11435; fi
+  if [ "${WORKERS:-}" = local ] || [ -n "${WORKERS_LOCAL:-}" ] || [[ "${FEELINGS_URL:-}${MEMORY_URL:-}" == *:11436* ]]; then
+    on_port worker-model 11436
+  fi
+  if [ "$STT" = whisper_local ]; then on_port stt 8930; fi
+  if local_voice; then on_port tts 8940; fi
+  if [ "${1:-}" = look ]; then echo "$gone${held:+ held:$held}"; return 0; fi
+  # (a part whose port another program holds cannot start until it is quit: said once a run, never started over it)
+  if [ -n "$held" ]; then echo "$(date '+%F %T') held by another program, so not started:$held"; fi
+  [ -z "$gone" ] && return 0
+  echo "$(date '+%F %T') down:$gone; starting $profile"
+  VX_NO_OPEN=1 VX_KEEPING=1 up "$profile"
+}
+
+# Her one small native program (tools/menubar/main.swift), the app "Viventium AI" in your Applications folder:
+# opened like any app (Launchpad, Spotlight, the Dock), it starts her and opens her call page; it is also the mark in
+# the menu bar and, when she starts with this Mac, the keeper that runs ./vx keep. It lives outside this folder because
+# macOS lets no background program read Documents, Desktop or Downloads until you allow that program by name:
+# launchd running /bin/bash on ./vx there only fails ("Operation not permitted") and nobody is asked.
+# An app is asked for once, by name, and everything it starts is allowed with it. (Not ~/Applications/Viventium.app:
+# that is main Viventium's own helper.) Before, it was built hidden in Application Support; it moves here once.
+APP="${VX_APP:-$HOME/Applications/Viventium AI.app}"
+OLD_APP="$HOME/Applications/Viventium Light.app"
+LEGACY_APP="$HOME/Library/Application Support/Viventium Light/Viventium.app"
+KEEPER=ai.viventium-light.keep
+if [ -n "$RELEASE" ]; then
+  APP=$(cat "$ROOT/.vx-app" 2>/dev/null || true)
+  KEEPER=ai.viventium-light.package.keep
+  export PATH="$HOME/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:$PATH"
+fi
+kept() { [ -f "$HOME/Library/LaunchAgents/$KEEPER.plist" ]; }  # launchd runs the app (she starts with this Mac)
+
+app_path() {  # the PATH the app and launchd give vx: this one, each folder once, only folders that exist and are not
+  # one window's or one session's own (a shell's per-window entries, temporary folders, which
+  # are gone once that window or session ends)
+  # (each line ends, the last one too: an unended last folder was dropped, so every rewrite of the app's PATH
+  # lost one, /sbin and then /usr/sbin, and vx ran without lsof or sysctl. macOS's own folders always come last.)
+  local dir
+  printf '%s:/usr/bin:/bin:/usr/sbin:/sbin\n' "$PATH" | tr : "\n" | while IFS= read -r dir; do
+    case "$dir" in ""|*fnm_multishells*|/tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*|/var/run/*|*/.codex/tmp/*) continue ;; esac
+    [ -d "$dir" ] && printf '%s\n' "$dir"
+  done | awk '!seen[$0]++' | paste -sd : -
+}
+
+helper() {  # the app, built once and again only when its source changed (a new build is asked for again by macOS)
+  local bin="$APP/Contents/MacOS/Viventium" src="$ROOT/tools/menubar/main.swift" plist="$APP/Contents/Info.plist"
+  if [ -n "${RELEASE:-}" ]; then
+    [ -x "$bin" ] && [ "$(app_value ViventiumSource)" = "$RELEASE" ]
+    return
+  fi
+  # Rename the existing bundle in place: its identifier, inode, state and Keychain services stay the same.
+  # Only migrate this checkout's app, never main Viventium or an unrelated installation.
+  local old migrated=""
+  for old in "$OLD_APP" "$LEGACY_APP"; do
+    [ "$APP" = "$HOME/Applications/Viventium AI.app" ] || continue
+    if [ -d "$old" ]; then
+      local old_id old_root
+      old_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$old/Contents/Info.plist" 2>/dev/null || true)
+      old_root=$(/usr/libexec/PlistBuddy -c 'Print :ViventiumRoot' "$old/Contents/Info.plist" 2>/dev/null || true)
+      if [ "$old_id" != ai.viventium.light ] || [ "$old_root" != "$ROOT" ]; then
+        echo "The previous app belongs to another installation. Keep it until its owner moves it."; return 1
+      fi
+      migrated=yes
+    fi
+  done
+  if [ -n "$migrated" ] && [ -e "$APP" ]; then
+    if [ "$(app_value CFBundleIdentifier)" != ai.viventium.light ] || [ "$(app_value ViventiumRoot)" != "$ROOT" ]; then
+      echo "The new app name is already used by another installation. Keep both apps until their owner moves them."; return 1
+    fi
+  fi
+  if [ -x "$bin" ] && [ ! "$src" -nt "$bin" ] && [ "$(app_value ViventiumRoot)" = "$ROOT" ] &&
+     [ -n "$(app_value ViventiumSource)" ] && [ -z "$migrated" ] && [ "$(app_value CFBundleDisplayName)" = "Viventium AI" ]; then
+    return 0; fi
+  if ! xcode-select -p >/dev/null 2>&1; then
+    [ "${1:-}" = build ] || return 0  # ./vx up runs without building a native app from source.
+    echo "Building the app needs Apple's developer tools: run 'xcode-select --install' once."; return 1
+  fi
+  local identity; identity=$(source_identity)
+  # Compile before changing the old app or its login item. A failed build leaves the old install usable.
+  local compiled; compiled=$(mktemp -d)
+  swiftc -O -o "$compiled/Viventium" "$src" >"$LOGS/menubar-build.log" 2>&1 || {
+    rm -rf "$compiled"; echo "It did not build; see logs/menubar-build.log"; return 1;
+  }
+  if [ -n "$migrated" ] && [ ! -e "$APP" ]; then
+    for old in "$OLD_APP" "$LEGACY_APP"; do
+      if [ -d "$old" ]; then mv "$old" "$APP"; break; fi
+    done
+  fi
+  mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+  mv "$compiled/Viventium" "$bin"; rmdir "$compiled"
+  # Its icon, drawn by the app itself at every size macOS asks for.
+  local set; set="$(mktemp -d)/AppIcon.iconset"; mkdir -p "$set"
+  for side in 16 32 128 256 512; do
+    "$bin" "$ROOT" --icon "$set/icon_${side}x${side}.png" "$side" && "$bin" "$ROOT" --icon "$set/icon_${side}x${side}@2x.png" $((side * 2))
+  done >>"$LOGS/menubar-build.log" 2>&1
+  iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$set" >>"$LOGS/menubar-build.log" 2>&1 || true
+  rm -rf "$(dirname "$set")"
+  local why="Viventium lives in this folder. It reads it to start and to stay running."
+  cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleIdentifier</key><string>ai.viventium.light</string>
+  <key>CFBundleName</key><string>Viventium AI</string>
+  <key>CFBundleDisplayName</key><string>Viventium AI</string>
+  <key>NSHumanReadableCopyright</key><string>© 2026 xPerfect.ai</string>
+  <key>CFBundleExecutable</key><string>Viventium</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1</string>
+  <key>CFBundleVersion</key><string>$(date +%Y%m%d%H%M)</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+  <key>LSUIElement</key><true/>
+  <key>ViventiumRoot</key><string>$ROOT</string>
+  <key>ViventiumSource</key><string>$identity</string>
+  <key>LSEnvironment</key><dict><key>PATH</key><string>$(app_path)</string><key>UI_PORT</key><string>$UI_PORT</string></dict>
+  <key>NSDocumentsFolderUsageDescription</key><string>$why</string>
+  <key>NSDesktopFolderUsageDescription</key><string>$why</string>
+  <key>NSDownloadsFolderUsageDescription</key><string>$why</string>
+</dict></plist>
+EOF
+  codesign --force -s - "$APP" >>"$LOGS/menubar-build.log" 2>&1 || return 1
+  # A test exercises the same migration and plist rewrite but never contacts this login's launchd.
+  if [ -n "$migrated" ] && kept; then autostart plist >"$HOME/Library/LaunchAgents/$KEEPER.plist"; fi
+  if [ -n "$migrated" ]; then
+    for old in "$OLD_APP" "$LEGACY_APP"; do
+      [ "$old" = "$APP" ] || rm -rf "$old"
+    done
+  fi
+  [ -n "${VX_APP:-}" ] && return 0  # (a test's own app: never registered, and nothing of his is stopped, moved or restarted)
+  # Launchpad and Spotlight find it at once.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP" \
+    >>"$LOGS/menubar-build.log" 2>&1 || true
+  # (asked by the app itself, starting her: it never restarts itself; the new build is used at its next open or login)
+  [ -n "${VX_FROM_APP:-}" ] && return 0
+  stop menubar  # (a new build replaces the one that is running)
+  if [ -n "$migrated" ]; then  # launchd runs the renamed app from now on
+    if kept; then
+      autostart plist >"$HOME/Library/LaunchAgents/$KEEPER.plist"
+      launchctl bootout "gui/$(id -u)/$KEEPER" 2>/dev/null || true
+      # (launchd takes a moment to let go of the old one: a bootstrap at once can fail)
+      local tries=0
+      until launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/$KEEPER.plist" 2>/dev/null; do
+        tries=$((tries + 1)); [ "$tries" -ge 10 ] && { echo "launchd did not take the new app yet: ./vx autostart on puts it back."; break; }
+        sleep 1
+      done
+    fi
+    echo "Viventium AI is in your Applications folder now: open it from there, Launchpad or Spotlight."
+  elif kept; then launchctl kickstart -k "gui/$(id -u)/$KEEPER" >/dev/null 2>&1 || true; fi
+}
+
+menubar() {  # menubar on|off|start|menu: her mark in the menu bar, there whenever she runs, unless you switched
+  # it off in Settings (logs/menubar.off: what you chose stays chosen)
+  local bin="$APP/Contents/MacOS/Viventium"
+  case "${1:-}" in
+    on) helper || exit 1; rm -f "$LOGS/menubar.off"; menubar start; echo "Menu bar: on." ;;
+    off) touch "$LOGS/menubar.off"; rm -f "$LOGS/menubar.on"; kept || stop menubar; echo "Menu bar: off." ;;  # (the keeper takes its own mark down)
+    menu) if [ -x "$bin" ]; then UI_PORT="$UI_PORT" "$bin" "$ROOT" --menu; else echo "Not built yet: ./vx app"; fi ;;  # its panel as it would open now
+    start) if kept; then launchctl kickstart "gui/$(id -u)/$KEEPER" >/dev/null 2>&1 || true  # (launchd's; started if it is not running)
+      elif [ ! -f "$LOGS/menubar.off" ] && [ -x "$bin" ] && ! running menubar; then start menubar - env UI_PORT="$UI_PORT" "$bin" "$ROOT" >/dev/null; fi ;;
+    *) if [ -f "$LOGS/menubar.off" ]; then echo "menubar: off (./vx menubar on)"; else echo "menubar: on"; fi ;;
+  esac
+}
+
+autostart() {  # autostart on|off: launchd (yours, in ~/Library/LaunchAgents) runs the app, which runs ./vx keep
+  local plist="$HOME/Library/LaunchAgents/$KEEPER.plist"
+  case "${1:-}" in
+    on) helper || exit 1
+      stop menubar  # (launchd runs the one app from now on, and it shows the mark too)
+      mkdir -p "$HOME/Library/LaunchAgents"; autostart plist >"$plist"
+      launchctl bootout "gui/$(id -u)/$KEEPER" 2>/dev/null || true
+      launchctl bootstrap "gui/$(id -u)" "$plist" || { echo "launchd did not take it; see $plist"; exit 1; }
+      echo "Autostart on: Viventium starts when you log in, and a part that stops comes back within 2 minutes (logs/keep.log)."
+      echo "If this folder is in Documents, Desktop or Downloads, macOS asks once whether Viventium may read it: choose Allow."
+      echo "./vx down still stops it until ./vx up. Undo: ./vx autostart off" ;;
+    off) launchctl bootout "gui/$(id -u)/$KEEPER" 2>/dev/null || true; rm -f "$plist"; menubar start; echo "Autostart off." ;;
+    plist) cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$KEEPER</string>
+  <key>ProgramArguments</key><array><string>$APP/Contents/MacOS/Viventium</string><string>$ROOT</string><string>--keep</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ProcessType</key><string>Interactive</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(app_path)</string><key>UI_PORT</key><string>$UI_PORT</string></dict>
+  <key>StandardOutPath</key><string>$LOGS/keep.log</string>
+  <key>StandardErrorPath</key><string>$LOGS/keep.log</string>
+</dict></plist>
+EOF
+      ;;
+    *) if [ -f "$plist" ]; then echo "autostart: on"; else echo "autostart: off (./vx autostart on)"; fi ;;
+  esac
+}
+
+subscriptions() {  # subscriptions [claude|codex|grok_mind]: the subscriptions this Mac's tools can use, one line each ("claude
+  # signed-in", "codex signed-out"; one whose tool is not here is not listed), for the app's sign-in logos; with a name,
+  # that provider's own sign-in started (its tool opens the browser; nothing is kept here)
+  local name harness tool active
+  active=$(cat "$LOGS/profile" 2>/dev/null || true)
+  if [ "${1:-}" = chatgpt_mind ]; then
+    [ -x "$ROOT/.venv/bin/python" ] || return 1
+    if [ "${2:-}" = --cancel ]; then
+      (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.chatgpt_sign_in cancel)
+      return
+    fi
+    local args=()
+    [ -z "${VX_SIWC_CONSENT_FILE:-}" ] || args+=(--consent-file "$VX_SIWC_CONSENT_FILE")
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.chatgpt_sign_in login "${args[@]}")
+    return
+  fi
+  if [ "${1:-}" = grok_mind ]; then
+    load_profile "${active:-local}" assess
+    [ -x "$ROOT/.venv/bin/python" ] || return 1
+    mine "$LOGS/sign-in.log"
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.grok_sign_in start 2>>"$LOGS/sign-in.log")
+    return
+  fi
+  for name in claude codex; do
+    harness=$([ "$name" = claude ] && echo claude-code || echo codex-cli); tool=$([ "$name" = claude ] && echo claude || echo codex)
+    command -v "$tool" >/dev/null 2>&1 || continue
+    if [ -z "${1:-}" ]; then
+      if signed_in_now "$harness"; then echo "$name signed-in"; else echo "$name signed-out"; fi
+    elif [ "$1" = "$name" ]; then
+      rm -f "$LOGS/settings-signins.json"  # (Settings asks again)
+      if [ "$name" = claude ]; then set -- claude auth login; else set -- codex login; fi
+      # Its own tool opens the browser. Keep stdout and stderr away from app logs.
+      export BROWSER=/usr/bin/open
+      "$@" >/dev/null 2>&1 </dev/null; return
+    fi
+  done
+  [ -z "${1:-}" ] || { echo "No such subscription on this Mac: ${1}"; return 1; }
+}
+
+doctor() {  # what is wrong, in plain words, and what to do (core/doctor.py says it; this gathers what only vx knows)
+  if restore_pending; then
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup doctor)
+    return $?
+  fi
+  local profile said code=0 code2 flags=()
+  profile="$(cat "$LOGS/profile" 2>/dev/null || echo local)"
+  said="$(mktemp)"; "$0" ready "$profile" >"$said" 2>&1 </dev/null || code=$?
+  [ ! -f "$LOGS/stopped" ] || flags+=(--stopped)
+  ! kept || flags+=(--autostart)
+  load_profile "$profile" check
+  if [ "$QUEEN" = ollama ] || [ "${WORKERS:-}" = local ] || [ -n "${WORKERS_LOCAL:-}" ] || [[ "${FEELINGS_URL:-}${MEMORY_URL:-}" == *:11436* ]]; then
+    flags+=(--local-models)
+  fi
+  ! running chat || flags+=(--telegram)
+  local missing identity; missing="$(keep look)"; identity="$(source_status)"; code2=0
+  (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.doctor --profile "$PROFILE" --missing "$missing" --ready-code "$code" \
+    --ready-file "$said" --source "$identity" ${flags[@]+"${flags[@]}"}) || code2=$?
+  rm -f "$said"; return $code2
+}
+
+setup_marker() {
+  local profile="${PROFILE:-local}" old
+  if [ -f "$LOGS/.setup-done" ] && [ ! -s "$LOGS/.setup-done" ]; then
+    old=$(cat "$LOGS/profile" 2>/dev/null || true)
+    case "$old/$profile" in
+      small-*/small-*) [ "$old" != "$profile" ] || { echo "$LOGS/.setup-done"; return; } ;;
+      small-*/*|*/small-*) ;;
+      *) echo "$LOGS/.setup-done"; return ;;
+    esac
+  fi
+  echo "$LOGS/.setup-done.$profile"
+}
+
+migrate_setup_marker() {  # Before replacing the profile that an older setup marker belongs to.
+  [ -f "$LOGS/.setup-done" ] && [ ! -s "$LOGS/.setup-done" ] || return 0
+  local old profile
+  old=$(cat "$LOGS/profile" 2>/dev/null || true)
+  case "$old" in small-8|small-16|small-24) set -- "$old" ;; *) set -- local hybrid cloud ;; esac
+  for profile; do touch -r "$LOGS/.setup-done" "$LOGS/.setup-done.$profile"; done
+  printf 'profiles\n' > "$LOGS/.setup-done"
+}
+
+needs_setup() {  # the first run for this profile, or an update changed what setup installs
+  local marker; marker=$(setup_marker)
+  [ ! -f "$marker" ] || [ -n "$(find "$ROOT/uv.lock" "$ROOT/speech/tts/uv.lock" "$ROOT/call/ui/pnpm-lock.yaml" \
+    "$ROOT/brain/patches" "$ROOT/core/downloads.json" "$ROOT/brain/xperfect.files.json" -newer "$marker" 2>/dev/null | head -1)" ]
+}
+
+fetching() {  # fetching WHAT COMMAND...: one of setup's downloads, in a subshell of its own. When it fails (no connection,
+  # a server that dropped it) one plain line says what to do and its detail goes to logs/setup.log, never a traceback
+  # (a clean Mac: Hugging Face's file server dropped her voice model mid-file and ./vx up ended in a Python
+  # traceback). Every step is safe to run again, so a dropped one is tried again by itself twice before it is told.
+  local what=$1 try; shift
+  for try in 1 2 3; do
+    if ( "$@" ) >>"$LOGS/setup.log" 2>&1; then return 0; fi
+    [ "$try" = 3 ] || [ "$(free_gb)" -lt 2 ] && break
+    sleep $(( try * 5 ))
+  done
+  download_failed "$what"
+}
+
+homebrew() {  # Homebrew, which her tools come from, installed by its own official script on a Mac that has none (before,
+  # the first run stopped at a link and a separate install). It asks for this Mac's password once.
+  local b script=""
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do  # (installed already, only not on this shell's PATH)
+    [ -x "$b" ] && { eval "$("$b" shellenv)"; return 0; }
+  done
+  if [ -n "${VX_FROM_APP:-}" ]; then
+    homebrew_package
+    echo "Approve the system tools in Installer."
+    blocked tools; exit 1
+  fi
+  if [ ! -t 0 ]; then
+    echo "Homebrew is required. Open the Viventium AI app to install it."; blocked tools; exit 1
+  fi
+  echo "Installing Homebrew, which its tools come from (it asks for this Mac's password once)."
+  if xcode-select -p >/dev/null 2>&1; then
+    # Keep the existing developer route when Apple's tools are already installed.
+    script="$LOGS/homebrew-install.sh"
+    fetch "$script" https://raw.githubusercontent.com/Homebrew/install/c9c975046f78e6e6d662deb801bd461ebd6a54ed/install.sh \
+      "the system tools" 8fd2f1a5287a7c2e3d7362924c677edcc04c5a0e16448c77132d056bc88cf1ed
+  else
+    homebrew_package
+  fi
+  # sudo first, whoever the account is (one sudo lets in installs it, an administrator or not; no prompt when none is
+  # needed). When it does not (a clean Mac: an administrator who gave no password was sent to brew.sh): not an
+  # administrator, today's lines; this Mac's sudo settings refusing the account, said as that (sudo's own fixed line, the
+  # only thing that tells it from a password: its exit is the same); else the password. sudo's own lines stay on screen.
+  local said; said="$(mktemp)"
+  if ! sudo -n true 2>/dev/null && ! { sudo -v 2>&1 1>&3 3>&- | tee "$said" >&2; } 3>&1; then
+    rm -f "$script"
+    if [[ " $(id -Gn) " != *" admin "* ]]; then
+      echo "Homebrew did not install (it needs an administrator account on this Mac). Install it from https://brew.sh,"
+      echo "then run ./vx up again."
+    elif grep -qF -e "may not run sudo" -e "is not in the sudoers file" "$said"; then
+      echo "Homebrew did not install: this Mac's settings do not let this account use sudo, which Homebrew needs. Whoever"
+      echo "manages this Mac can allow it; then run ./vx up again."
+    else
+      echo "Homebrew did not install: this Mac's password was not given, or did not work (it is the one you log in with)."
+      echo "Run ./vx up again."
+    fi
+    rm -f "$said"; exit 1
+  fi
+  rm -f "$said"
+  local installed=0
+  if [ -n "$script" ]; then
+    NONINTERACTIVE=1 /bin/bash "$script" || installed=$?
+  else
+    sudo /usr/sbin/installer -pkg "$LOGS/Homebrew.pkg" -target / || installed=$?
+  fi
+  if [ "$installed" != 0 ]; then
+    rm -f "$script"
+    echo "Homebrew did not install (it needs an administrator account on this Mac). Install it from https://brew.sh,"
+    echo "then run ./vx up again."; exit 1
+  fi
+  rm -f "$script"
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do [ -x "$b" ] && { eval "$("$b" shellenv)"; break; }; done
+  command -v brew >/dev/null || unfinished "Homebrew"
+}
+
+homebrew_package() {
+  local pkg="$LOGS/Homebrew.pkg" version=7.0.15
+  local checksum=af0827528fda9e8b653ac57815e1a003af588b7153749e8eb23d474afc60976c
+  fetch "$pkg" "https://github.com/Homebrew/brew/releases/download/$version/Homebrew.pkg" "the system tools" "$checksum"
+  pkgutil --check-signature "$pkg" >>"$LOGS/setup.log" 2>&1 || download_failed "The system tools"
+}
+
+brewed() {  # the tools this Mac lacks, installed with Homebrew (nothing to choose or configure): the one part of setup
+  # that may need Terminal, for Homebrew itself and this Mac's password
+  local need="" pair
+  for pair in uv:uv pnpm:pnpm npm:node python3:python livekit-server:livekit whisper-server:whisper.cpp \
+      ffmpeg:ffmpeg rg:ripgrep git:git; do
+    if [ "${STT:-}" != whisper_local ] && [ "$pair" = whisper-server:whisper.cpp ]; then continue; fi
+    tool_ready "${pair%%:*}" || need="$need ${pair##*:}"
+  done
+  if [ -n "$need" ]; then
+    command -v brew >/dev/null || homebrew
+    # (never a question, never a wait on a terminal: Homebrew 7 asks y/n in one by default, and Terminal waited on it;
+    # HOMEBREW_NO_ASK is its own switch, ignored by an older one)
+    progress "the system tools"
+    echo "Installing:$need"
+    if ! HOMEBREW_NO_ASK=1 brew install $need </dev/null 2>>"$LOGS/setup.log"; then
+      download_failed "Installing$need"
+    fi
+  fi
+  hash -r  # discard any system stub cached before Homebrew installed its tools
+}
+
+hand_off() {  # the first run, started in Terminal: once what needs Terminal is done (Homebrew and
+  # this Mac's password), the app takes over in its own window and Terminal can close (Terminal only for what
+  # truly needs it). Anywhere else (the app, the keeper, a script, a set-up Mac) this does nothing.
+  [ -t 0 ] && [ -t 1 ] && [ -z "${VX_FROM_APP:-}${VX_KEEPING:-}${VX_APP:-}" ] && [ "${VX_NO_OPEN:-}" != 1 ] || return 0
+  [ ! -f "$LOGS/.setup-done" ] || return 0
+  [ -z "${RELEASE:-}" ] || return 0
+  helper >>"$LOGS/menubar-build.log" 2>&1 || return 0  # (it cannot be built: setup goes on here, as before)
+  [ -x "$APP/Contents/MacOS/Viventium" ] || return 0
+  open "$APP" || return 0  # (it cannot open: setup goes on here, still holding the lock)
+  rm -rf "$LOGS/up.lock"  # (the app's own start takes it once this one has let go)
+  echo "Viventium AI goes on in its own window. You can close Terminal."
+  exit 0
+}
+
+voice_files() {
+  # Unknown custom models need a reviewed manifest entry; never silently fetch main.
+  if [ "${TTS_MODEL:-mlx-community/chatterbox-turbo-8bit}" != mlx-community/chatterbox-turbo-8bit ]; then
+    echo "This voice has no verified download yet. Choose Chatterbox in Settings."
+    exit 1
+  fi
+  python3 "$ROOT/core/downloads.py" voice 2>>"$LOGS/setup.log" || download_failed "Her voice"
+}
+
+harnesses() {  # her Workers' harnesses, when this Mac has none: into Light's own tools/, never globally (main uses the
+  # global ones). Light's PATH finds them there. (Before a first sign-in can be asked: sign_in.)
+  python3 "$ROOT/core/downloads.py" harnesses 2>>"$LOGS/setup.log" || download_failed "The Workers' tools"
+}
+
+xperfect_patches() {  # Peel later patches on a private copy, so overlap cannot hide an earlier patch.
+  python3 - "$ROOT/brain/patches" "${1:-$ROOT/brain/xperfect}" <<'EOF'
+import os, shutil, subprocess, sys, tempfile
+from pathlib import Path
+
+patches = sorted(Path(sys.argv[1]).glob("xperfect-*.patch"))
+xp = Path(sys.argv[2]).resolve()
+
+def apply(where, *args, check=True):
+    return subprocess.run(["git", "-C", str(where), "apply", *map(str, args)],
+                          env={**os.environ, "GIT_CEILING_DIRECTORIES": str(where.parent)},
+                          capture_output=True, check=check)
+
+try:
+    with tempfile.TemporaryDirectory(prefix="vx-patches-") as folder:
+        probe = Path(folder)
+        # Only patched files: never copy an installed environment, state or credentials.
+        paths = set()
+        for patch in patches:
+            for entry in apply(xp, "--numstat", "-z", patch).stdout.split(b"\0"):
+                if entry:
+                    paths.add(os.fsdecode(entry.split(b"\t", 2)[2]))
+        for name in paths:
+            source, target = xp / name, probe / name
+            if source.exists() or source.is_symlink():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target, follow_symlinks=False)
+        present = []
+        for patch in reversed(patches):
+            present.append(apply(probe, "--reverse", "--whitespace=nowarn", patch, check=False).returncode == 0)
+        present.reverse()
+        if present != sorted(present, reverse=True):
+            sys.exit("  The Workers' patches are out of order; their files were left unchanged.")
+        # Prove the whole series before changing the install; do not mistake a conflict for an applied patch.
+        for patch in patches:
+            apply(probe, "--whitespace=nowarn", patch)
+        for patch, installed in zip(patches, present):
+            if not installed:
+                apply(xp, "--whitespace=nowarn", patch)
+except subprocess.CalledProcessError as error:
+    sys.exit(f"  The Workers' patches could not be prepared: {error.stderr.decode(errors='replace').strip()}")
+EOF
+}
+
+prepare_xperfect() {
+  local xp="$ROOT/brain/xperfect"
+  if [ -f "$ROOT/brain/xperfect.pin" ]; then
+    install_pinned_xperfect || download_failed "The Workers' manager"
+  elif [ ! -f "$xp/xperfect" ]; then
+    progress "the Workers' manager"
+    fetching "her Workers' manager" git -C "$ROOT" submodule update --init brain/xperfect
+  fi
+  xperfect_patches || exit 1
+  if ! python3 "$ROOT/core/downloads.py" xperfect >>"$LOGS/setup.log" 2>&1; then
+    echo "The Workers' files do not match this release. Keep this copy and install a fresh copy of Light."
+    exit 1
+  fi
+}
+
+install_pinned_xperfect() (
+  local xp="$ROOT/brain/xperfect" pin stage checksum checked_pin archive
+  [ -x "$xp/xperfect" ] && return 0
+  pin=$(cat "$ROOT/brain/xperfect.pin")
+  [[ "$pin" =~ ^[0-9a-f]{40}$ ]] || exit 1
+  read -r checked_pin checksum <"$ROOT/brain/xperfect.archive.sha256.txt"
+  [ "$checked_pin" = "$pin" ] && [[ "$checksum" =~ ^[0-9a-f]{64}$ ]] || exit 1
+  archive="$LOGS/xperfect-$pin.tgz"
+  fetch "$archive" "https://codeload.github.com/xPerfectAI/xPerfect/tar.gz/$pin" "the Workers' manager" "$checksum"
+  stage=$(mktemp -d "$ROOT/brain/.xperfect.XXXXXXXX")
+  trap 'rm -rf "$stage"' EXIT
+  tar -xz -f "$archive" --strip-components 1 -C "$stage" || exit 1
+  [ -x "$stage/xperfect" ] || exit 1
+  xperfect_patches "$stage" || exit 1
+  [ ! -e "$xp" ] && mv "$stage" "$xp" && rm -f "$archive"
+)
+
+install_ollama() (
+  local destination archive stage
+  destination=$(dirname "$OLLAMA_BIN")
+  archive="$destination.tgz"
+  fetch "$archive" "https://github.com/ollama/ollama/releases/download/v$OLLAMA_VERSION/ollama-darwin.tgz" \
+    "the model server" 607c79d5d6315ef9d896db83adde736a4c0057196329843544e79b95afb260a8
+  stage=$(mktemp -d "$destination.part.XXXXXX")
+  trap 'rm -rf "$stage"' EXIT
+  tar -xz -f "$archive" -C "$stage" && [ -x "$stage/ollama" ] || download_failed "The model server"
+  rm -rf "$destination"
+  mv "$stage" "$destination"
+  rm -f "$archive"
+)
+
+grok_harness() {
+  [ "${WORKER_GROK_SIGN_IN:-}" = 1 ] || return 0
+  local into="$ROOT/tools/grok-build" version expected actual staged binary packed
+  read -r version expected < <(python3 -c 'import json, platform, sys
+pin = json.load(open(sys.argv[1]))
+print(pin["version"], pin["sha256"][platform.machine()])' "$ROOT/tools/grok-build-pin.json") || return 1
+  if [ -x "$into/grok" ] && [ ! -L "$into/grok" ]; then
+    actual=$(shasum -a 256 "$into/grok") || return 1
+    [ "${actual%% *}" != "$expected" ] || return 0
+  fi
+  progress "Grok Build"
+  mkdir -p "$into" || return 1
+  staged=$(mktemp -d "$into/.install.XXXXXX") || return 1
+  # (the package ships its program brotli-packed in its platform part and unpacks it in an install script, which is
+  # never run here: it is unpacked here instead, then checked against the pin. On a clean Mac, without this, a new
+  # Grok-only install stopped at "could not be verified")
+  binary="$staged/grok"
+  packed="$staged/node_modules/@xai-official/grok-darwin-$( [ "$(uname -m)" = arm64 ] && echo arm64 || echo x64 )/bin/grok.br"
+  if fetching "Grok Build" npm install --prefix "$staged" --ignore-scripts --no-save --package-lock=false "@xai-official/grok@$version" --no-audit --no-fund --silent \
+      && [ -f "$packed" ] && node -e 'const z = require("zlib"), f = require("fs");
+f.writeFileSync(process.argv[2], z.brotliDecompressSync(f.readFileSync(process.argv[1])), {mode: 0o755})' "$packed" "$binary" \
+      && [ -x "$binary" ] && actual=$(shasum -a 256 "$binary") && [ "${actual%% *}" = "$expected" ] \
+      && [ ! -d "$into/grok" ] && mv -f "$binary" "$into/grok"; then
+    rm -rf "$staged"
+    return 0
+  fi
+  rm -rf "$staged"
+  echo "Grok Build could not be verified." >&2
+  blocked failed "Grok Build could not be verified. Try again."
+  return 1
+}
+
+setup() {  # idempotent: install what's missing, create private xPerfect states
+  brewed
+  harnesses
+  [ -d "/Applications/Google Chrome.app" ] || echo "  note: her Workers browse the web in your Google Chrome; install it (google.com/chrome) for web tasks."
+  if [ ! -x "$OLLAMA_BIN" ] && [ "${MEMORY_EMBED:-}" != off ]; then install_ollama; fi
+  echo "Setting up (a few minutes the first time)…"
+  progress "Viventium's parts"
+  fetching "her Python parts" sh -c 'cd "$1" && uv sync --locked --group test --quiet' sh "$ROOT"
+  if [ "${1:-}" != background ] && { [ "${STT:-off}" != off ] || [ "${STT_AUTO:-}" = 1 ]; }; then
+    python3 "$ROOT/core/downloads.py" hearing || download_failed "Hearing"
+  fi
+  if [ -z "${SMALL_MAC_TIER:-}" ] || local_voice; then
+    progress "the voice"
+    fetching "her voice's parts" sh -c 'cd "$1/speech/tts" && uv sync --locked --quiet' sh "$ROOT"
+    if [ "${1:-}" != background ]; then voice_files; fi
+  fi
+  progress "the page"
+  fetching "her page's parts" pnpm --dir "$ROOT/call/ui" install --frozen-lockfile --silent
+  # (no LiveKit key here: ./vx gives the page Light's own from the Keychain, in its environment; an older file loses
+  # the published sample pair it was made with, and nothing else)
+  if [ -f "$ROOT/call/ui/.env.local" ]; then sed -i '' -e '/^LIVEKIT_API_KEY=devkey$/d' -e '/^LIVEKIT_API_SECRET=secret$/d' "$ROOT/call/ui/.env.local"; \
+  else printf 'LIVEKIT_URL=ws://127.0.0.1:7880\nAGENT_NAME=\n' > "$ROOT/call/ui/.env.local"; fi
+  prepare_xperfect
+  for kind in local cloud; do
+    state="$ROOT/brain/state-$kind"
+    [ -f "$state/config.json" ] && continue
+    "$ROOT/brain/xperfect/xperfect" doctor --state-dir "$state" --api-port "$(xp_ports "$state" api)" --ui-port "$(xp_ports "$state" ui)" \
+      --mcp-port "$(xp_ports "$state" mcp)" >/dev/null 2>&1 || true
+    python3 - "$state/config.json" "$kind" "$ROOT" <<'EOF'
+import json, os, sys
+path, kind, root = sys.argv[1:]
+c = json.load(open(path))
+c["env"].update({"WPR_CODEX_CLI_REASONING_EFFORT": "high", "WPR_CLAUDE_CODE_EFFORT": "high",
+                 # Claude Code Workers never change this Mac's security (brain/patches/xperfect-0002)
+                 "WPR_CLAUDE_CODE_DENY": json.dumps(["Bash(sudo *)", "Bash(spctl *)", "Bash(csrutil *)", "Bash(tccutil *)", "Bash(systemsetup *)", "Bash(fdesetup *)", "Bash(pfctl *)", "Bash(nvram *)", "Bash(dscl *)", "Bash(security delete-*)", "Bash(security add-trusted-cert *)", "Bash(defaults write /Library/*)", "Bash(launchctl bootout *)"])})
+if kind == "local":  # Workers on the local Qwen, through this project's own Codex home
+    c["env"].update({"CODEX_HOME": f"{root}/brain/codex-home-local",
+                     "WPR_CLAUDE_CODE_BASE_URL": "http://127.0.0.1:11436", "WPR_CLAUDE_CODE_AUTH_TOKEN": "ollama-local",
+                     "WPR_CLAUDE_CODE_MAX_CONTEXT_TOKENS": "65536",  # = OLLAMA_CONTEXT_LENGTH: compact before it
+                     # Built-in tools a local Worker never needs leave its prompt (31k -> 17k tokens, prefill
+                     # 21 s -> 10 s on the local model); web search needs Anthropic's servers anyway.
+                     "WPR_CLAUDE_CODE_DENY": json.dumps(json.loads(c["env"]["WPR_CLAUDE_CODE_DENY"]) + ["Task", "CronCreate", "CronDelete", "CronList", "DesignSync", "EnterWorktree", "ExitWorktree", "ListAgents", "NotebookEdit", "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "TaskStop", "WebFetch", "WebSearch", "Workflow"])})
+    c["models"] = {"codex-cli": "qwen3.6:latest", "claude-code": "qwen3.6:latest"}
+else:                # Workers on your own Codex / Claude Code sign-ins
+    c["models"] = {"codex-cli": "gpt-6.1-sol", "claude-code": "claude-opus-5-5"}
+with open(path + ".tmp", "w", opener=lambda p, f: os.open(p, f, 0o600)) as h:
+    json.dump(c, h, indent=2); h.write("\n")
+os.replace(path + ".tmp", path)
+EOF
+    (umask 077; python3 -c "import secrets; print(secrets.token_urlsafe(18))" > "$state/unlock-password")
+  done
+  if [ -n "${SMALL_MAC_TIER:-}" ]; then touch "$LOGS/.setup-done.$PROFILE"
+  else touch "$LOGS/.setup-done.local" "$LOGS/.setup-done.hybrid" "$LOGS/.setup-done.cloud"; fi
+  printf 'profiles\n' > "$LOGS/.setup-done"
+  echo "Setup done."
+}
+
+case "${1:-}" in
+  setup-catalog) PYTHONDONTWRITEBYTECODE=1 "$ROOT/.venv/bin/python" -c 'import json; from settings.catalog import setup_accounts; print(json.dumps(setup_accounts()))' ;;
+  setup-hearing) load_profile "${2:?}" check running; prepare_hearing ;;
+  setup-memory) load_profile "${2:?}" check running
+    serve_embed background
+    start life-index - "$ROOT/.venv/bin/python" -m core.memory refresh ;;
+  tools-ready)
+    [ "${2:-}" = tools ] && [ -x /opt/homebrew/bin/brew ] && pkgutil --pkg-info sh.brew.homebrew >/dev/null 2>&1 ;;
+  setup-accounts) load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" assess
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings setup-accounts) ;;
+  setup) load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check
+    migrate_setup_marker; shared record; trap 'shared check' EXIT; setup ;;
+  up) up "${2:-}" ;;  # (no profile: the one she last ran; on the first run, Local or Hybrid: first_choice)
+  telegram) load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)"; telegram ;;
+  down) touch "$LOGS/stopped"; resting; down ;;
+  keep) keep "${2:-}" ;;
+  autostart) autostart "${2:-}" ;;
+  menubar) menubar "${2:-}" ;;
+  app) helper build && echo "Viventium AI: $APP (open it from Applications, Launchpad or Spotlight)" ;;
+  life) load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check; echo "$LIFE" ;;
+  preflight) load_profile "${2:-local}" assess; preflight; echo "Profile: $PROFILE." ;;
+  ready) load_profile "${2:-$(cat "$LOGS/profile" 2>/dev/null || echo local)}" check; preflight
+    require_small_mac_sign_in </dev/null; ask_keys </dev/null; sign_in </dev/null
+    # An online mind is asked for a word first: a key that exists can still be refused, or point at the wrong place. Only a
+    # definite failure refuses (mind_answers check): no answer in time is the start's to ask again at its gate.
+    if [ "$QUEEN" != ollama ] && [ -x "$ROOT/.venv/bin/python" ]; then mind_answers check || exit 1; fi
+    echo "Ready: $PROFILE can start on this Mac." ;;
+  restart) restart "${2:-}" ;;
+  status) status ;;
+  doors-off) stop_doors ;;  # (Settings turned calling from the phone off: its doors close now, with no restart)
+  backup) case "${2:-save}" in  # core/backup.py
+      save|list) (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup "${2:-save}") ;;
+      *) echo "./vx backup        make one"; echo "./vx backup list   see them"; echo "./vx restore [name]" ;;
+    esac ;;
+  restore)  # put a backup back: only while nothing of hers is running (a running part would write over it)
+    if starting || running agent || running chat || running clock || nc -z 127.0.0.1 "$UI_PORT" 2>/dev/null; then
+      echo "Stop Viventium first (./vx down), then run this again: a running part would write over what is restored."; exit 1
+    fi
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup restore "${@:2}") || exit $?
+    # Calls from a phone: off until it is paired on this Mac again (the doors' keys and a pairing never travel in a backup).
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings phone-off) || true
+    # What a backup never holds (a key, a sign-in, a bot, a paired phone): said once, for the profile just restored.
+    load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.doctor --reconnect) ;;
+  doctor) doctor ;;
+  agent-again) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check  # (tests: her agent restarts as
+    stop agent; : > "$LOGS/agent.log"; start_agent "$@" ;;                                    # given, and nobody waits for it)
+  settings) shift
+    if restore_pending; then
+      (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup status)
+    else
+      load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check
+      (cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings "$@")
+    fi ;;
+  subscriptions) subscriptions "${2:-}" ;;
+  first-run-key) load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" assess
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings first-run-key "${2:-OPENAI_API_KEY}") ;;
+  install) "$ROOT/.venv/bin/python" -m settings install "${2:-}" ;;  # one thing this Mac lacks (a photo, video or language model, a provider's tool): settings/install.py
+  test) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)"; sound_check; bench_test "$@" ;;
+  scorecard) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)"; "$ROOT/.venv/bin/python" tests/scorecard.py "$@" ;;
+  test-telegram) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)"
+    TEST_TELEGRAM=1 test_life tests/telegram_test.py "$@" ;;  # (it runs the channel itself)
+  test-sound) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)"; load_keys
+    # (no Life: the test reads none, and his real one, which the profile names, makes every test refuse to run)
+    sound_check && shared record && env -u LIFE "$ROOT/.venv/bin/python" tests/sound_test.py "$@"; shared check ;;
+  sounds) load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)"; load_keys; sound_check
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m speech.sounds build) ;;
+  samples) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check; load_keys
+    (cd "$ROOT" && "$ROOT/.venv/bin/python" -m settings sample "$@") ;;
+  *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" ;;  # (the lines at the top of this file)
+esac

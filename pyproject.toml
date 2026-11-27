@@ -1,0 +1,16 @@
+[project]
+name = "viventium-experimental"
+version = "0.1.0"
+description = "Lean local voice calls: LiveKit (call) + local/cloud speech + Queen/xPerfect workers (brain)"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "livekit-agents[openai,silero,turn-detector,assemblyai,anthropic,xai]~=1.8.11",
+  "httpx>=0.27",
+  "pyjwt[crypto]>=2.10,<3",
+]
+
+[dependency-groups]
+test = ["playwright>=1.48"]
+
+[tool.uv]
+package = false

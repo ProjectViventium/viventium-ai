@@ -1,0 +1,95 @@
+{
+ "voice": "chatterbox-turbo-8bit-default",
+ "checked_by": "MIT/ast-finetuned-audioset-10-10-0.4593",
+ "rule": "sound score >= 0.45 and speech < 0.3, as the clip is played",
+ "clips": {
+  "laugh-1": {
+   "score": 0.69,
+   "seconds": 1.13
+  },
+  "laugh-2": {
+   "score": 0.66,
+   "seconds": 1.01
+  },
+  "laugh-3": {
+   "score": 0.61,
+   "seconds": 1.38
+  },
+  "laugh-4": {
+   "score": 0.584,
+   "seconds": 1.84
+  },
+  "laugh-5": {
+   "score": 0.582,
+   "seconds": 1.54
+  },
+  "laugh-6": {
+   "score": 0.568,
+   "seconds": 1.36
+  },
+  "sigh-1": {
+   "score": 0.887,
+   "seconds": 0.57
+  },
+  "sigh-2": {
+   "score": 0.857,
+   "seconds": 0.77
+  },
+  "sigh-3": {
+   "score": 0.84,
+   "seconds": 0.93
+  },
+  "sigh-4": {
+   "score": 0.83,
+   "seconds": 0.68
+  },
+  "sigh-5": {
+   "score": 0.783,
+   "seconds": 0.73
+  },
+  "sigh-6": {
+   "score": 0.777,
+   "seconds": 0.63
+  },
+  "gasp-1": {
+   "score": 0.794,
+   "seconds": 0.76
+  },
+  "gasp-2": {
+   "score": 0.737,
+   "seconds": 0.7
+  },
+  "gasp-3": {
+   "score": 0.711,
+   "seconds": 0.53
+  },
+  "gasp-4": {
+   "score": 0.701,
+   "seconds": 0.66
+  },
+  "gasp-5": {
+   "score": 0.699,
+   "seconds": 0.89
+  },
+  "gasp-6": {
+   "score": 0.68,
+   "seconds": 0.62
+  },
+  "chuckle-1": {
+   "score": 0.66,
+   "seconds": 1.01,
+   "from": "laugh-2"
+  },
+  "chuckle-2": {
+   "score": 0.69,
+   "seconds": 1.13,
+   "from": "laugh-1"
+  },
+  "chuckle-3": {
+   "score": 0.568,
+   "seconds": 1.36,
+   "from": "laugh-6"
+  }
+ },
+ "chuckle": "a chuckle plays one of her three shortest laughs: the voice's own [chuckle] was not heard (0 of 24 Chatterbox renderings, 0 of 6 xAI)"
+}

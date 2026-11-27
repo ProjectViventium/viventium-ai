@@ -1,0 +1,281 @@
+diff --git a/docs/03_Bootstrap_Auth_and_Identity_Projection.md b/docs/03_Bootstrap_Auth_and_Identity_Projection.md
+--- a/docs/03_Bootstrap_Auth_and_Identity_Projection.md
++++ b/docs/03_Bootstrap_Auth_and_Identity_Projection.md
+@@ -698,6 +698,13 @@
+ subscription/API-key identities fail before launch. A cached copy of the same API key written by the
+ native agent is permitted on subsequent turns.
+ 
++The worker's private `config.toml` can declare Grok Build's `auth_provider_command` under `[auth]`
++or `[grok_com_config]`. With no bound credential path or explicit key, the adapter selects the
++external provider before looking for a cached account. Grok must advertise the external provider
++on its ACP sign-in method. The adapter runs it headlessly, blocks the native credential cache,
++and reports a failed or timed-out sign-in as `provider_auth_missing`. The program supplying
++credentials owns how it obtains and renews them.
++
+ Optional `grok_mcp_servers` contains native ACP server objects. The bridge checks advertised HTTP/SSE
+ support; the selected worker's tool authority still owns which servers may be projected. Claude and
+ Cursor compatibility MCP scanning is disabled. Project-local native Grok and `.mcp.json` discovery
+diff --git a/runtime_phase1/src/workers_projects_runtime/failure_classification.py b/runtime_phase1/src/workers_projects_runtime/failure_classification.py
+--- a/runtime_phase1/src/workers_projects_runtime/failure_classification.py
++++ b/runtime_phase1/src/workers_projects_runtime/failure_classification.py
+@@ -273,6 +273,7 @@
+ # Typed stops recorded by the Grok runner when a native request ends the turn.
+ # The user text is fixed here; runner or provider prose never becomes the message.
+ GROK_NATIVE_INPUT_STOPS = {
++    "provider_auth_missing": "Grok sign-in is unavailable. Sign in to the configured Grok account and try again.",
+     "native_mcp_unavailable": "The configured tool connection was not ready before the model turn.",
+     "native_input_unanswered": "Grok ended before an owner response was recorded.",
+     "native_input_expired": "Grok stopped because its request for your response expired without an answer.",
+@@ -329,6 +330,8 @@
+             retryable=False,
+             user_message=GROK_NATIVE_INPUT_STOPS[native_stop],
+             recommended_recovery=(
++                "Sign in to the configured Grok account and retry this work."
++                if native_stop == "provider_auth_missing" else
+                 "Check the configured tool connection and retry this work; its files are kept."
+                 if native_stop == "native_mcp_unavailable" else
+                 "Send a new instruction to continue in this workspace; its files are kept."
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_acp.py b/runtime_phase1/src/workers_projects_runtime/grok_acp.py
+--- a/runtime_phase1/src/workers_projects_runtime/grok_acp.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_acp.py
+@@ -26,6 +26,18 @@
+         super().__init__(message)
+         self.code = code
+         self.stop_reason = stop_reason
++
++
++# Grok keeps a usable external credential in memory when its cache is unwritable.
++# A child of the null device can never be a file. Do not point Grok at the device itself.
++EXTERNAL_AUTH_MEMORY_PATH = '/dev/null/auth.json'
++EXTERNAL_AUTH_TIMEOUT = 8.0
++EXTERNAL_AUTH_MESSAGE = 'Grok sign-in is unavailable. Sign in to the configured Grok account and try again.'
++
++
++class ExternalAuthError(AcpError):
++    def __init__(self, code=None):
++        super().__init__(EXTERNAL_AUTH_MESSAGE, code=code if type(code) is int else None)
+ 
+ 
+ def validated_session_model(event: dict, requested: str) -> str | None:
+@@ -541,7 +553,7 @@
+         return next((option for option in state.get('configOptions', [])
+                      if isinstance(option, dict) and option.get('id') == config_id), None)
+ 
+-    def open(self, *, cwd, model, session_id=None, effort=None, mcp_servers=None, required_mcp_servers=None, auth_method=None, rules=None, system_prompt_override=None, yolo_mode=None, native_tools_disabled=False):
++    def open(self, *, cwd, model, session_id=None, effort=None, mcp_servers=None, required_mcp_servers=None, auth_method=None, rules=None, system_prompt_override=None, yolo_mode=None, native_tools_disabled=False, external_auth=False):
+         self.requested_model = model
+         if not isinstance(native_tools_disabled, bool):
+             raise AcpError('Grok native tool restriction must be a boolean')
+@@ -586,13 +598,24 @@
+             raise AcpError('Unsupported Grok ACP protocol version')
+         if self.initialization.get('_meta', {}).get('grokShell') is not True:
+             raise AcpError('The configured process did not identify as Grok Build')
+-        auth_method = auth_method or self.initialization.get('_meta', {}).get('defaultAuthMethodId')
+         methods = self.initialization.get('authMethods') or []
+-        if auth_method not in ('xai.api_key', 'cached_token') or not any(
+-            isinstance(method, dict) and method.get('id') == auth_method for method in methods
+-        ):
+-            raise AcpError('Grok authentication is unavailable; connect the selected native account', code=-32000)
+-        self.client.request('authenticate', {'methodId':auth_method, '_meta':{'headless':True}})
++        if external_auth:
++            if not any(isinstance(method, dict) and method.get('id') == 'grok.com'
++                       and isinstance(method.get('_meta'), dict) and method['_meta'].get('external_provider') is True
++                       for method in methods):
++                raise ExternalAuthError()
++            try:
++                self.client.request('authenticate', {'methodId':'grok.com', '_meta':{'headless':True}},
++                                    timeout=EXTERNAL_AUTH_TIMEOUT)
++            except AcpError as exc:
++                raise ExternalAuthError(exc.code) from None
++        else:
++            auth_method = auth_method or self.initialization.get('_meta', {}).get('defaultAuthMethodId')
++            if auth_method not in ('xai.api_key', 'cached_token') or not any(
++                isinstance(method, dict) and method.get('id') == auth_method for method in methods
++            ):
++                raise AcpError('Grok authentication is unavailable; connect the selected native account', code=-32000)
++            self.client.request('authenticate', {'methodId':auth_method, '_meta':{'headless':True}})
+         capabilities = self.initialization.get('agentCapabilities', {}).get('mcpCapabilities', {})
+         for server in mcp_servers or []:
+             kind = server.get('type', 'stdio')
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py b/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py
+--- a/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py
+@@ -24,12 +24,12 @@
+ from threading import Lock, Thread
+ 
+ try:
+-    from .grok_acp import AcpClient, AcpError, GrokSession
++    from .grok_acp import AcpClient, AcpError, EXTERNAL_AUTH_MEMORY_PATH, ExternalAuthError, GrokSession
+     from .grok_control import ControlMailbox
+     from .owner_worker_access import native_deny_rules
+     from .agent_builder_control import conversation_interjection_supported, conversation_controls_from_schema, conversation_output_contract_instructions, minimal_conversation_output_schema
+ except ImportError:  # Private, materialized standalone runtime copy.
+-    from grok_acp import AcpClient, AcpError, GrokSession
++    from grok_acp import AcpClient, AcpError, EXTERNAL_AUTH_MEMORY_PATH, ExternalAuthError, GrokSession
+     from grok_control import ControlMailbox
+     from owner_worker_access import native_deny_rules
+     from agent_builder_control import conversation_interjection_supported, conversation_controls_from_schema, conversation_output_contract_instructions, minimal_conversation_output_schema
+@@ -118,6 +118,8 @@
+ 
+ def _stopped_turn(exc, session, mailbox):
+     # A cancelled turn is explained from typed state, never from Grok's text.
++    if isinstance(exc, ExternalAuthError):
++        return 'provider_auth_missing', str(exc)
+     if exc.stop_reason == 'mcp_unavailable':
+         return 'native_mcp_unavailable', 'Configured Grok MCP tools did not become ready before prompting.'
+     if exc.stop_reason != 'cancelled':
+@@ -143,6 +145,7 @@
+ def run(args):
+     output_lock = Lock()
+     started_at = time.monotonic()
++    external_auth = os.environ.get('GROK_AUTH_PATH') == EXTERNAL_AUTH_MEMORY_PATH
+     def emit(event):
+         with output_lock:
+             observation = {**event,
+@@ -315,7 +318,7 @@
+                          system_prompt_override=system_prompt,
+                          yolo_mode=({'true': True, 'false': False}.get(getattr(args, 'yolo_mode', None))),
+                          auth_method='xai.api_key' if os.environ.get('XAI_API_KEY') else None,
+-                         native_tools_disabled=restricted)
++                         native_tools_disabled=restricted, external_auth=external_auth)
+             if ceiling is not None and (problem := _owner_ceiling_problem(ceiling)):
+                 message = "Grok was stopped before its turn: its owner's deny rules changed in its home."
+                 emit({'type':'grok.error','session_id':session.session_id,'failure_class':'native_ceiling_unverified',
+@@ -341,6 +344,7 @@
+                 mailbox.start()
+             emit({'type':'grok.session.started','session_id':session.session_id,
+                   'model':session.configured_model, 'requested_model':args.model, 'protocol_version':1,
++                  **({'auth_method': 'external_provider'} if external_auth else {}),
+                   'native_control_capabilities': {'interject': reviewed_interject and conversation_interjection_supported(output_schema)},
+                   'agent_version':session.initialization.get('_meta', {}).get('agentVersion'),
+                   'config_options':session.session_state.get('configOptions', []),
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_runtime.py b/runtime_phase1/src/workers_projects_runtime/grok_runtime.py
+--- a/runtime_phase1/src/workers_projects_runtime/grok_runtime.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_runtime.py
+@@ -19,10 +19,23 @@
+ from .agent_builder_control import conversation_output_schema, conversation_output_contract_instructions, conversation_controls_from_schema
+ from .mission_provider_accounts import apply_bound_provider_account_environment, native_current_account_allowed
+ from .auth import _env_bool, multi_user_security_enabled, native_installed_owner_id
+-from .grok_acp import validated_session_model
++from .grok_acp import EXTERNAL_AUTH_MEMORY_PATH, validated_session_model
+ from .grok_native_warm import GrokNativeWarmMixin
+ from .openclaw_runtime import ProviderAuthenticationMissingError, RuntimeConfigurationError, RuntimeDependencyMissingError, RuntimeErrorBase
+ from .profile_runtime import BaseCliWorkerRuntime, HostNativeCliMixin, _atomic_write_private_text, _native_tools_disabled, tomllib
++
++
++def _declares_external_auth(home: Path) -> bool:
++    try:
++        config = tomllib.loads((home / 'config.toml').read_text())
++    except (OSError, ValueError):
++        return False  # Existing credential routes still let Grok validate its own config.
++    for section in ('auth', 'grok_com_config'):
++        table = config.get(section)
++        command = table.get('auth_provider_command') if isinstance(table, dict) else None
++        if isinstance(command, str) and command.strip():
++            return True
++    return False
+ 
+ 
+ def _grok_conversation_skill_config(text):
+@@ -368,6 +381,9 @@
+             # delegation remains available through the existing MCP broker.
+             env['GROK_SUBAGENTS'] = '0'
+             env['GROK_WORKFLOWS'] = '0'
++        if not env.get('GROK_AUTH_PATH') and not env.get('XAI_API_KEY') and _declares_external_auth(home):
++            env['GROK_AUTH_PATH'] = EXTERNAL_AUTH_MEMORY_PATH
++            return env
+         if host and not env.get('GROK_AUTH_PATH') and not env.get('XAI_API_KEY'):
+             source = self._current_host_auth_path(worker)
+             if source is not None:
+diff --git a/runtime_phase1/tests/test_grok_external_auth.py b/runtime_phase1/tests/test_grok_external_auth.py
+new file mode 100644
+--- /dev/null
++++ b/runtime_phase1/tests/test_grok_external_auth.py
+@@ -0,0 +1,87 @@
++import json
++import os
++import sys
++from io import StringIO
++
++import pytest
++
++from workers_projects_runtime import grok_acp, grok_acp_runner
++from workers_projects_runtime.failure_classification import classify_cli_failure
++from workers_projects_runtime.grok_runtime import HostGrokBuildRuntime
++
++
++@pytest.mark.parametrize('section', ['auth', 'grok_com_config'])
++def test_external_auth_boots_from_worker_config_without_consulting_current_login(tmp_path, monkeypatch, section):
++    runtime = HostGrokBuildRuntime(str(tmp_path / 'runtime'))
++    worker = {'worker_id': 'worker', 'profile': 'grok-build'}
++    home = runtime._grok_home(worker)
++    home.mkdir(parents=True)
++    (home / 'config.toml').write_text(f'[{section}]\nauth_provider_command = "/local/provider"\n')
++    monkeypatch.setattr(runtime, '_host_env', lambda _: {})
++    current_login = []
++    monkeypatch.setattr(runtime, '_current_host_auth_path', lambda _: current_login.append(True))
++
++    env = runtime._native_environment(worker, host=True)
++
++    assert env['GROK_AUTH_PATH'] == '/dev/null/auth.json'
++    assert not current_login
++    assert not (home / 'auth.json').exists()
++
++
++@pytest.mark.parametrize('outcome', ['success', 'signed_out', 'refused', 'timeout', 'unadvertised'])
++def test_external_auth_stops_or_opens_session_on_native_evidence(tmp_path, monkeypatch, capfd, outcome):
++    peer = tmp_path / 'grok'
++    peer.write_text('#!' + sys.executable + '\n' + f'outcome = {outcome!r}\n' + '''
++import json, sys, time
++
++def send(data):
++    print(json.dumps({'jsonrpc': '2.0', **data}), flush=True)
++
++for line in sys.stdin:
++    request = json.loads(line)
++    method = request['method']
++    if method == 'initialize':
++        result = {'protocolVersion': 1, '_meta': {'grokShell': True},
++                  'authMethods': [{'id': 'grok.com', '_meta': {'external_provider': outcome != 'unadvertised'}}]}
++    elif method == 'authenticate':
++        assert request['params'] == {'methodId': 'grok.com', '_meta': {'headless': True}}
++        if outcome == 'timeout':
++            time.sleep(30)
++        if outcome != 'success':
++            send({'id': request['id'], 'error': {'code': -32000, 'message': 'private failure detail'}})
++            continue
++        result = {}
++    elif method == 'session/new':
++        assert outcome == 'success'
++        result = {'sessionId': 'synthetic', 'models': {'currentModelId': 'grok-selected'}}
++    elif method == 'session/prompt':
++        send({'method': 'session/update', 'params': {'sessionId': 'synthetic', 'update': {
++            'sessionUpdate': 'agent_message_chunk', 'content': {'type': 'text', 'text': 'Synthetic result'}}}})
++        result = {'stopReason': 'end_turn'}
++    else:
++        raise AssertionError(method)
++    send({'id': request['id'], 'result': result})
++''')
++    peer.chmod(0o700)
++    monkeypatch.setenv('GROK_HOME', str(tmp_path / 'home'))
++    monkeypatch.setenv('GROK_AUTH_PATH', '/dev/null/auth.json')
++    monkeypatch.setattr(grok_acp, 'EXTERNAL_AUTH_TIMEOUT', 1.0, raising=False)
++    monkeypatch.setattr(sys, 'stdin', StringIO('Synthetic instruction'))
++
++    status = grok_acp_runner.main(['--binary', os.fspath(peer), '--model', 'grok-selected'])
++    captured = capfd.readouterr()
++    events = [json.loads(line) for line in captured.out.splitlines()]
++    if outcome == 'success':
++        assert status == 0
++        started = next(event for event in events if event['type'] == 'grok.session.started')
++        assert started['auth_method'] == 'external_provider'
++        assert events[-1]['output'] == 'Synthetic result'
++        return
++
++    assert status == 2
++    assert not any(event.get('phase') == 'prompt_started' for event in events)
++    assert 'private failure detail' not in captured.out + captured.err
++    assert events[-1]['failure_class'] == 'provider_auth_missing'
++    failure = classify_cli_failure(stdout=captured.out, stderr=captured.err, runtime_name='grok-build', exit_code=2)
++    assert failure.failure_class == 'provider_auth_missing'
++    assert 'sign in' in failure.user_message.lower()

@@ -1,0 +1,252 @@
+--- a/runtime_phase1/src/workers_projects_runtime/mission_provider_accounts.py
++++ b/runtime_phase1/src/workers_projects_runtime/mission_provider_accounts.py
+@@ -283,6 +283,18 @@
+     return MissionProviderAccountSelection(policy=policy, account_id=account_id)
+
+
++class RetiredChatGPTPlan(RuntimeErrorBase):
++    code = "chatgpt_plan_retired"
++
++    def __init__(self) -> None:
++        super().__init__("ChatGPT plan background work ended. Its workspace and receipts were kept.")
++
++
++def refuse_retired_plan_worker(worker: dict) -> None:
++    if _bootstrap_bundle(worker).get("external_plan_session"):
++        raise RetiredChatGPTPlan()
++
++
+ def native_current_account_allowed(worker: dict) -> bool:
+     """Only single-user, unbound workers may use ambient OS credentials."""
+     if enterprise_authentication_enabled():
+@@ -290,6 +302,8 @@
+     if worker.get("_glasshive_provider_account_bound") or worker.get("_glasshive_inference_broker_bound"):
+         return False
+     bundle = _bootstrap_bundle(worker)
++    if bundle.get("external_plan_session"):
++        return False
+     # Preparation can run before mission leasing or while a conversation is being
+     # converted to a mission. An explicit account still excludes ambient authority.
+     selection = mission_provider_account_selection({**worker, "bootstrap_bundle_json": {**bundle, "run_mode": "mission"}})
+--- a/runtime_phase1/src/workers_projects_runtime/service.py
++++ b/runtime_phase1/src/workers_projects_runtime/service.py
+@@ -71,6 +71,7 @@
+     deployment_provider_readiness,
+     mission_provider_account_selection,
+     other_live_provider_lease,
++    refuse_retired_plan_worker,
+ )
+ from .openclaw_runtime import (
+     HostCapacityError,
+@@ -3104,6 +3105,7 @@
+                 "Workspace is closed; create a new workspace for new work"
+             )
+         if isinstance(worker_or_mode, dict):
++            refuse_retired_plan_worker(worker_or_mode)
+             unresolved = self._unresolved_duplication_reapprovals(worker_or_mode)
+             if unresolved:
+                 raise ControlPlaneConflict(
+@@ -20020,6 +20022,7 @@
+         *,
+         authority_context: dict[str, str] | None = None,
+     ) -> dict:
++        refuse_retired_plan_worker(worker)
+         qa_auth = self._consume_local_qa(
+             "provider_auth_missing", worker, run
+         )
+--- a/runtime_phase1/src/workers_projects_runtime/coordinator.py
++++ b/runtime_phase1/src/workers_projects_runtime/coordinator.py
+@@ -18,6 +18,7 @@
+ from pydantic import BaseModel, ConfigDict, Field
+
+ from .failure_classification import is_user_resumable_failure
++from .mission_provider_accounts import RetiredChatGPTPlan, refuse_retired_plan_worker
+ from .models import CLOSED_WORKER_STATES, utc_now
+
+
+@@ -27,6 +28,11 @@
+
+ class CoordinatorScopeError(PermissionError):
+     pass
++
++
++def _refuse_retired_plan(config: "CoordinatorConfig") -> None:
++    if config.bootstrap_bundle.get("external_plan_session"):
++        raise CoordinatorConflict(str(RetiredChatGPTPlan()))
+
+
+ class CoordinatorWorkerBlocked(CoordinatorConflict):
+@@ -691,6 +697,7 @@
+             raise CoordinatorConflict("Turn ID and message are required")
+         goals = goals or []
+         config = CoordinatorConfig.model_validate_json(conversation["config_json"])
++        _refuse_retired_plan(config)
+         refs = self._library_refs(library_refs) if library_refs is not None else None
+         with self.store._connect() as conn:
+             accepted = conn.execute(
+@@ -780,13 +787,16 @@
+     def dispatch(self, tenant: str, owner: str, conversation_id: str, dispatch: Dispatch) -> dict:
+         conversation = self._conversation(tenant, owner, conversation_id)
+         self._assert_not_restore_held(conversation)
++        config = CoordinatorConfig.model_validate_json(conversation["config_json"])
++        _refuse_retired_plan(config)
+         origin_scope = self._conversation_scope(conversation)
+         if dispatch.worker_id:
+             return self._dispatch_existing_worker(tenant, owner, conversation_id, dispatch, origin_scope)
+-        config = CoordinatorConfig.model_validate_json(conversation["config_json"])
+         route = next((r for r in config.routes if r.id == dispatch.route_id), None)
+         if route is None:
+             raise CoordinatorScopeError("Route outside coordinator authority")
++        if route.bootstrap_bundle.get("external_plan_session"):
++            raise CoordinatorConflict(str(RetiredChatGPTPlan()))
+         if route.connection_id:
+             self._assert_owned_connection(tenant, owner, route.connection_id)
+         goal = self._goal(conversation_id, dispatch.goal_id)
+@@ -987,6 +997,7 @@
+                          (serialized, dispatch.worker_id, conversation_id, dispatch.goal_id))
+         try:
+             from .mission_provider_accounts import mission_provider_account_selection
++            refuse_retired_plan_worker(worker)
+             account = mission_provider_account_selection(worker)
+             if account is not None and self.service._retained_provider_account_problem(
+                     account_id=account.account_id, tenant_id=tenant, owner_id=owner,
+@@ -1069,6 +1080,8 @@
+                     started_at=run.get("started_at", ...),
+                 )
+             )
++        if goal["blocker"] == RetiredChatGPTPlan.code:
++            result.update(state="failed", retryable=False, error_text=str(RetiredChatGPTPlan()))
+         if goal["work_ref"]:
+             delegation = self.store.get_delegation(goal["work_ref"], tenant_id=tenant, owner_id=owner)
+             result["actions"] = []
+@@ -1148,8 +1161,16 @@
+                 "goals": [self._goal_summary(self.goal_snapshot(tenant, owner, conversation_id, r["goal_id"])) for r in goals]}
+
+     def control(self, tenant: str, owner: str, conversation_id: str, goal_id: str, control: Control) -> dict:
+-        self._assert_not_restore_held(self._conversation(tenant, owner, conversation_id))
++        conversation = self._conversation(tenant, owner, conversation_id)
++        self._assert_not_restore_held(conversation)
+         goal = self.goal_snapshot(tenant, owner, conversation_id, goal_id)
++        if control.action not in {"stop", "dismiss"}:
++            _refuse_retired_plan(CoordinatorConfig.model_validate_json(conversation["config_json"]))
++            if worker := self.store.get_worker(goal["worker_id"]):
++                try:
++                    refuse_retired_plan_worker(worker)
++                except RetiredChatGPTPlan as exc:
++                    raise CoordinatorConflict(str(exc)) from None
+         if control.action in {"queue", "message", "steer"} and not control.message.strip():
+             raise CoordinatorConflict("Guidance is required for this action")
+         if control.run_id:
+@@ -1488,6 +1509,15 @@
+
+         conversation = self._conversation(tenant, owner, conversation_id)
+         config = CoordinatorConfig.model_validate_json(conversation["config_json"])
++        if config.bootstrap_bundle.get("external_plan_session"):
++            with self.store._connect() as conn:
++                conn.execute(
++                    "UPDATE coordinator_turns SET blocker=? WHERE conversation_id=? AND turn_id=? "
++                    "AND request_id='' AND blocker<>'cancelled'",
++                    (RetiredChatGPTPlan.code, conversation_id, turn_id),
++                )
++            return {"turn_id": turn_id, "state": "blocked", "blocker": RetiredChatGPTPlan.code,
++                    "message": str(RetiredChatGPTPlan())}
+         with self.store._connect() as conn:
+             accepted = conn.execute(
+                 "SELECT library_json,payload_json FROM coordinator_turns WHERE conversation_id=? AND turn_id=?",
+@@ -1956,6 +1986,7 @@
+         """
+
+         conversation = self._conversation(tenant, owner, conversation_id)
++        _refuse_retired_plan(CoordinatorConfig.model_validate_json(conversation["config_json"]))
+         expected = str(expected_hold_set_hash or "").strip()
+         if len(expected) != 64 or any(char not in "0123456789abcdef" for char in expected.lower()):
+             raise CoordinatorConflict("Invalid continuity restore hold receipt")
+@@ -2161,8 +2192,14 @@
+             return []
+         with self.store._connect() as conn:
+             rows = [dict(r) for r in conn.execute("SELECT * FROM coordinator_goals WHERE conversation_id=? AND restore_hold=0 AND dispatch_json<>'' AND run_id=''", (conversation_id,))]
++        config = CoordinatorConfig.model_validate_json(conversation["config_json"])
+         results = []
+         for goal in rows:
++            if goal["intent_state"] != "cancelled" and config.bootstrap_bundle.get("external_plan_session"):
++                with self.store._connect() as conn:
++                    conn.execute("UPDATE coordinator_goals SET blocker=? WHERE conversation_id=? AND goal_id=? AND run_id=''",
++                                 (RetiredChatGPTPlan.code, conversation_id, goal["goal_id"]))
++                continue
+             if goal["intent_state"] != "cancelled":
+                 # As for turns, a permanent typed admission blocker waits for an explicit
+                 # re-dispatch; only crash recovery and capacity blockers replay here.
+@@ -2203,7 +2240,9 @@
+         session = self.store.get_provider_session_by_worker(str(worker["worker_id"]))
+         if not session or session.get("agent_id") != "coordinator":
+             return worker
+-        self._conversation(session["tenant_id"], session["owner_id"], session["conversation_id"])
++        conversation = self._conversation(session["tenant_id"], session["owner_id"], session["conversation_id"])
++        if CoordinatorConfig.model_validate_json(conversation["config_json"]).bootstrap_bundle.get("external_plan_session"):
++            raise RetiredChatGPTPlan()
+         from urllib.parse import urlparse
+         from . import native_transport
+         socket_base = native_transport.native_base()
+--- /dev/null
++++ b/runtime_phase1/tests/test_retired_light_plan.py
+@@ -0,0 +1,60 @@
++"""Upgrade from a saved plan Worker or Coordinator with native Codex available."""
++import json
++from unittest.mock import Mock
++
++import pytest
++from test_coordinator_existing_worker import existing  # noqa: F401
++from workers_projects_runtime.coordinator import Control, CoordinatorConflict, canonical
++from workers_projects_runtime.mission_provider_accounts import native_current_account_allowed
++from workers_projects_runtime.openclaw_runtime import RuntimeErrorBase
++
++
++REASON = "ChatGPT plan background work ended. Its workspace and receipts were kept."
++
++
++def test_saved_plan_worker_cannot_dispatch_on_native_authority(existing):
++    core, cid, worker_id, command = existing
++    worker = core.store.get_worker(worker_id)
++    bundle = {**json.loads(worker["bootstrap_bundle_json"]), "external_plan_session": "fixture-plan-session"}
++    core.store.update_worker(worker_id, bootstrap_bundle_json=json.dumps(bundle), profile="codex-cli")
++    core.service.assign_run = assigned = Mock(return_value={"run_id": "unexpected-native-run"})
++    with core.store._connect() as conn:
++        # The upgrade lands after a dispatch was saved and before its assignment.
++        conn.execute("UPDATE coordinator_goals SET dispatch_json=?,worker_id=? WHERE conversation_id=?",
++                     (canonical(command.request_payload()), worker_id, cid))
++    [outcome] = core.recover_dispatches("local", "owner", cid)
++    assigned.assert_not_called()
++    assert outcome["state"] == "failed" and outcome["error_text"] == REASON
++    assert not outcome["run_id"]
++    assert json.loads(core.store.get_worker(worker_id)["bootstrap_bundle_json"]) == bundle
++    assert not native_current_account_allowed(core.store.get_worker(worker_id))
++    assert native_current_account_allowed(worker)
++    core.service._consume_local_qa = preflight = Mock()
++    with pytest.raises(RuntimeErrorBase, match="background work ended"):
++        core.service._run_local_admitted_worker(core.store.get_worker(worker_id), {"run_id": "saved-run"})
++    preflight.assert_not_called()
++    with pytest.raises(CoordinatorConflict, match="background work ended"):
++        core.control("local", "owner", cid, command.goal_id,
++                     Control(action="resume", idempotency_key="resume", run_id=""))
++    assert core.recover_dispatches("local", "owner", cid) == []
++
++
++def test_saved_plan_coordinator_cannot_start_or_accept_more_work(existing):
++    core, cid, _, command = existing
++    with core.store._connect() as conn:
++        saved = conn.execute("SELECT config_json FROM coordinator_conversations WHERE conversation_id=?", (cid,)).fetchone()
++        config = json.loads(saved[0])
++        config["bootstrap_bundle"]["external_plan_session"] = "fixture-plan-session"
++        conn.execute("UPDATE coordinator_conversations SET config_json=? WHERE conversation_id=?",
++                     (json.dumps(config), cid))
++    core.provider.start = start = Mock()
++    outcome = core.start_turn("local", "owner", cid, "turn")
++    start.assert_not_called()
++    assert outcome["message"] == REASON
++    turn = core.snapshot("local", "owner", cid)["turns"][0]
++    assert turn["blocker"] == "chatgpt_plan_retired"
++    assert turn["message"] == "Exact user goal.\nKeep  two spaces."
++    with pytest.raises(CoordinatorConflict, match="background work ended"):
++        core.dispatch("local", "owner", cid, command)
++    with pytest.raises(CoordinatorConflict, match="background work ended"):
++        core.accept_turn("local", "owner", cid, "next", "Follow up")

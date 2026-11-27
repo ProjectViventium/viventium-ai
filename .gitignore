@@ -1,0 +1,29 @@
+# Runtime state, logs and machine-private settings stay out of any repo.
+.venv/
+logs/
+brain/state-*/
+brain/codex-home-*/sessions/
+profiles/*.local.env
+speech/tts/.venv/
+call/ui/node_modules/
+call/ui/.next/
+call/ui/.env.local
+speech/tts/logs/
+speech/tts/samples/
+brain/codex-home-*/tmp/
+__pycache__/
+.DS_Store
+state/
+tools/node_modules/
+tools/grok-build/
+# The local Workers' Codex home: only its template is tracked (runtime state stays local)
+brain/codex-home-local/*
+!brain/codex-home-local/config.template.toml
+tools/menubar/.build/
+
+# Photos and videos made on this Mac: the runtime and the model weights stay local (settings/install.py)
+tools/media/.venv/
+tools/media/models/
+tools/media/sdcpp*/
+
+tools/harnesses/

@@ -1,0 +1,7 @@
+#!/bin/bash
+# One Worker at a time at the user's screen, mouse and keyboard: tools/desktop/hold.py says how. Light's own Python,
+# else the system's (the tool needs only the standard library).
+here="$(cd "$(dirname "$0")" && pwd)"
+python="$here/../../.venv/bin/python"
+[ -x "$python" ] || python="$(command -v python3)"
+exec "$python" "$here/hold.py" "$@"

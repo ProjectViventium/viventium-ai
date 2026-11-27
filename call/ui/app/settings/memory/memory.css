@@ -1,0 +1,249 @@
+/* The Memory page (settings/memory/page.tsx). Only the tokens of settings.css: no colour is named here.
+   A line of memory is words first; its source under it, quiet; Forget beside it, a link. Nothing is boxed: lines are
+   parted by a hairline that fades at both ends, and a line you can correct lights with a tone when the pointer is on it. */
+
+.vsm-group + .vsm-group {
+  margin-top: 22px;
+}
+.vsm-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0 -10px;
+  padding: 8px 10px;
+  border-radius: 14px;
+}
+.vsm-line + .vsm-line {
+  background-image: linear-gradient(
+    90deg,
+    transparent,
+    var(--line-2) 10%,
+    var(--line-2) 90%,
+    transparent
+  );
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+}
+.vsm-line[data-gone='true'] {
+  align-items: center;
+  min-height: var(--target);
+}
+.vsm-words {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.vsm-text {
+  width: 100%;
+  margin: -4px -8px;
+  padding: 4px 8px;
+  border-radius: 10px;
+  text-align: left;
+  font: inherit;
+  font-size: 15.5px;
+  line-height: 1.45;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  transition: background var(--respond) ease;
+}
+button.vsm-text {
+  cursor: text;
+}
+button.vsm-text:hover,
+button.vsm-text:focus-visible {
+  background: var(--inner);
+  outline: none;
+}
+.vsm-text[data-still='true'] {
+  color: var(--soft);
+}
+.vsm-edit {
+  font-size: 15.5px;
+  line-height: 1.45;
+  resize: none;
+}
+.vsm-from {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  font-size: 12.5px;
+  color: var(--quiet);
+}
+.vsm-hint::before,
+.vsm-done::before {
+  content: '·';
+  margin-right: 10px;
+}
+.vsm-from > .vsm-hint:first-child::before,
+.vsm-from > .vsm-done:first-child::before {
+  content: none;
+  margin: 0;
+}
+.vsm-done {
+  display: inline-flex;
+  gap: 10px;
+  color: var(--soft);
+}
+.vsm-forget {
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity var(--respond) ease;
+}
+.vsm-line:hover .vsm-forget,
+.vsm-line:focus-within .vsm-forget {
+  opacity: 1;
+}
+@media (hover: none) {
+  .vsm-forget {
+    opacity: 1;
+  }
+}
+
+/* What was just forgotten, and what it still keeps in other words */
+.vsm-still {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+.vsm-still > .vs-hint {
+  font-size: 12.5px;
+}
+
+/* How it runs: one fact each, an icon, said once */
+.vsm-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 26px 0 0;
+  padding: 18px 0 0;
+  list-style: none;
+  font-size: 13.5px;
+  color: var(--soft);
+  background-image: linear-gradient(90deg, var(--line-2), transparent);
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+}
+.vsm-facts li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vsm-facts li[data-low] {
+  color: var(--low);
+}
+.vsm-facts svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--quiet);
+}
+
+/* A look */
+.vsm-look {
+  position: relative;
+}
+.vsm-look svg {
+  position: absolute;
+  top: 50%;
+  left: 14px;
+  width: 17px;
+  height: 17px;
+  color: var(--quiet);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.vsm-look .vs-input {
+  padding-left: 42px;
+  min-height: var(--target);
+}
+.vsm-found {
+  margin-top: 18px;
+}
+
+/* Conversations: one line each, what was said opened in place */
+.vsm-talk-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  min-height: 56px;
+  text-align: left;
+}
+.vsm-chev {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--quiet);
+  transition: transform var(--respond) var(--ease);
+}
+.vsm-talk-top[aria-expanded='true'] .vsm-chev {
+  transform: rotate(90deg);
+}
+.vsm-talk[data-gone='true'] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+}
+.vsm-talk-more {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 2px 0 16px;
+}
+.vsm-look-of {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.vsm-look-of .vsm-said li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vsm-said {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--soft);
+}
+
+/* Changes */
+.vsm-changes q {
+  color: var(--text);
+}
+.vsm-changes tr[data-undone] td {
+  opacity: 0.55;
+}
+.vsm-changes td:last-child {
+  width: 1%;
+  text-align: right;
+}
+.vsm-aside-icon {
+  width: 18px;
+  height: 18px;
+  color: var(--quiet);
+}
+
+@media (max-width: 640px) {
+  .vsm-line {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .vsm-forget {
+    align-self: flex-start;
+    margin-top: 0;
+    opacity: 1;
+  }
+}

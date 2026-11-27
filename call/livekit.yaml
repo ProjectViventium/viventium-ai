@@ -1,0 +1,14 @@
+# Local LiveKit server for this experiment (separate from Viventium's 7888-7890).
+port: 7880
+bind_addresses: ["127.0.0.1"]
+rtc:
+  # Calls from this Mac only: the sound is offered on this computer's own address alone, over UDP, with no TCP port
+  # for it. Calling from the phone on the same Wi-Fi adds this Mac's address on the network (python -m call.phone livekit).
+  tcp_port: 0
+  udp_port: 7882
+  use_external_ip: false
+  enable_loopback_candidate: true
+  ips:
+    includes: ["127.0.0.1/32"]
+logging:
+  level: info

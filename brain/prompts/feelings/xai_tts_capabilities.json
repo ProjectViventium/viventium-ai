@@ -1,0 +1,42 @@
+{
+  "_source": "main Viventium viventium_v0_4/shared/voice/xai_tts_capabilities.json, speech tags only (verbatim)",
+  "provider": "xai",
+  "source_urls": [
+    "https://docs.x.ai/developers/model-capabilities/audio/text-to-speech",
+    "https://docs.livekit.io/agents/models/tts/xai/",
+    "https://docs.livekit.io/reference/python/livekit/plugins/xai/index.html"
+  ],
+  "speech_tags": {
+    "inline": [
+      "[pause]",
+      "[long-pause]",
+      "[hum-tune]",
+      "[laugh]",
+      "[chuckle]",
+      "[giggle]",
+      "[cry]",
+      "[tsk]",
+      "[tongue-click]",
+      "[lip-smack]",
+      "[breath]",
+      "[inhale]",
+      "[exhale]",
+      "[sigh]"
+    ],
+    "wrapping": [
+      "soft",
+      "whisper",
+      "loud",
+      "build-intensity",
+      "decrease-intensity",
+      "higher-pitch",
+      "lower-pitch",
+      "slow",
+      "fast",
+      "sing-song",
+      "singing",
+      "laugh-speak",
+      "emphasis"
+    ]
+  }
+}

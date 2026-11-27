@@ -1,0 +1,66 @@
+{
+  "_source": "Main Viventium's shared voice capabilities, with Light's native Chatterbox policy. No runtime sound clips.",
+  "schema_version": 1,
+  "contract": "viventium_tts_provider_capabilities",
+  "providers": {
+    "xai": {
+      "display_label": "xAI",
+      "default_model": "xai-tts",
+      "runtime_models": [
+        {
+          "id": "xai-tts",
+          "api_route": "tts",
+          "legacy": false
+        }
+      ],
+      "inline_controls": {
+        "supported": true,
+        "mode": "xai_speech_tags",
+        "dialect_contract": "xai_tts_capabilities.json",
+        "runtime_policy": "preserve_documented_controls"
+      },
+      "dynamic_expression": {
+        "per_turn_wired": true,
+        "status": "model_authored_inline_controls"
+      },
+      "sources": [
+        "https://docs.x.ai/developers/model-capabilities/audio/text-to-speech",
+        "https://docs.x.ai/developers/model-capabilities/audio/voice-agent"
+      ]
+    },
+    "local_chatterbox_turbo_mlx_8bit": {
+      "display_label": "Local Chatterbox",
+      "default_model": "mlx-community/chatterbox-turbo-8bit",
+      "runtime_models": [
+        {
+          "id": "mlx-community/chatterbox-turbo-8bit",
+          "local": true
+        }
+      ],
+      "generation_defaults": {
+        "top_p": 0.8
+      },
+      "inline_controls": {
+        "supported": true,
+        "mode": "chatterbox_nonverbal_markers",
+        "exact_tokens": [
+          "[laugh]",
+          "[sigh]",
+          "[gasp]"
+        ],
+        "runtime_policy": "preserve_exact_tokens",
+        "context_sentences": 1,
+        "reliability": "best_effort"
+      },
+      "dynamic_expression": {
+        "per_turn_wired": true,
+        "status": "model_authored_inline_controls"
+      },
+      "sources": [
+        "https://github.com/resemble-ai/chatterbox",
+        "https://huggingface.co/ResembleAI/chatterbox-turbo",
+        "https://huggingface.co/mlx-community/chatterbox-turbo-8bit/blob/main/added_tokens.json"
+      ]
+    }
+  }
+}

@@ -1,0 +1,84 @@
+--- a/runtime_phase1/src/workers_projects_runtime/grok_control.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_control.py
+@@ -192,7 +192,8 @@
+             if self.input_window is not None:
+                 expires_at = min(expires_at, wall_now + self.input_window)
+                 deadline = min(deadline, mono_now + self.input_window)
+-            result.update(expires_at=expires_at, deadline=deadline)
++            packet = {'request_id':request_id, 'method':method, 'request':params, 'expires_at':expires_at}
++            result.update(expires_at=expires_at, deadline=deadline, fingerprint=control_digest(packet))
+             expired = self._request_expired(result)
+             if not fenced and not stopped and not expired:
+                 self._permissions[request_id] = result
+@@ -208,8 +209,7 @@
+                         'reason':reason})
+             return None
+         pending_path = self.root / (request_id + '.pending')
+-        write_private(pending_path, {'request_id':request_id, 'method':method, 'request':params,
+-                      'expires_at':expires_at}, managed_acl=self.managed_acl)
++        write_private(pending_path, packet, managed_acl=self.managed_acl)
+         self.event({'type':'grok.permission.requested', 'session_id':self.session.session_id,
+                     'request_id':request_id, 'method':method, 'request':params})
+         try:
+@@ -318,12 +318,15 @@
+                 pending = self._permissions.get(request.get('request_id'))
+                 if self._turn_cancelled or self.stopped.is_set() or not pending or pending['resolved'].is_set():
+                     raise ValueError('Grok permission is absent, expired or already resolved')
+-                if request.get('request_fingerprint'):
++                fingerprint = request.get('request_fingerprint')
++                if fingerprint:
+                     published = read_message(self.root / (request['request_id'] + '.pending'))
+-                    if (published.get('expires_at', 0) <= time.time()
+-                            or control_digest(published) != request['request_fingerprint']):
++                    if (fingerprint != pending['fingerprint'] or published.get('expires_at', 0) <= time.time()
++                            or control_digest(published) != fingerprint):
+                         raise ValueError('native_input_stale')
+                     option = request.get('option_id')
++                    if pending['method'] == 'session/request_permission' and request.get('response') is not None:
++                        raise ValueError('native_input_invalid')
+                     if option is not None and not any(
+                             isinstance(item, dict) and item.get('optionId') == option
+                             for item in published['request'].get('options') or []):
+--- a/runtime_phase1/src/workers_projects_runtime/models.py
++++ b/runtime_phase1/src/workers_projects_runtime/models.py
+@@ -1083,4 +1083,5 @@
+     text: str | None = Field(default=None, max_length=65536)
+     request_id: str | None = Field(default=None, max_length=128)
+     option_id: str | None = Field(default=None, max_length=128)
++    request_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+     response: dict | None = None
+--- a/runtime_phase1/tests/test_grok_runtime.py
++++ b/runtime_phase1/tests/test_grok_runtime.py
+@@ -755,7 +755,8 @@
+ def test_runner_mission_deadline_covers_native_permission_and_acp_backstop(tmp_path, monkeypatch, capfd, expired):
+     import io, threading, time
+     from workers_projects_runtime import grok_acp_runner as runner
+-    from workers_projects_runtime.grok_control import submit_control
++    from workers_projects_runtime.grok_control import control_digest, submit_control, write_private
++    from workers_projects_runtime.models import NativeControlRequest
+     fake = tmp_path / 'grok-fixture'
+     fake.write_text(PERMISSION_FIXTURE.replace('PYTHON', sys.executable)); fake.chmod(0o700)
+     root = tmp_path / 'control'
+@@ -780,9 +781,19 @@
+                 if paths:
+                     question = json.loads(paths[0].read_text())
+                     assert question['expires_at'] == deadline_at
+-                    reply = submit_control(root, {'run_id': 'run-1', 'attempt_id': 'attempt-1',
+-                        'session_id': 'native-id', 'action': 'permission',
+-                        'request_id': question['request_id'], 'option_id': 'allow'})
++                    original_digest = control_digest(question)
++                    body = NativeControlRequest(run_id='run-1', attempt_id='attempt-1',
++                        action='permission', request_id=question['request_id'], option_id='allow',
++                        request_fingerprint=original_digest).model_dump(exclude_none=True)
++                    body['session_id'] = 'native-id'
++                    changed = json.loads(json.dumps(question))
++                    changed['request']['toolCall']['rawInput'] = {'command': 'echo changed'}
++                    write_private(paths[0], changed)
++                    for fingerprint in (original_digest, control_digest(changed)):
++                        rejected = submit_control(root, {**body, 'request_fingerprint': fingerprint})
++                        assert rejected['status'] == 'rejected' and rejected['error'] == 'native_input_stale'
++                    write_private(paths[0], question)
++                    reply = submit_control(root, body)
+                     assert reply['status'] == 'permission_submitted'
+                     return
+                 time.sleep(.02)

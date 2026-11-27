@@ -1,0 +1,18 @@
+# Codex home for local-profile Workers only. Your real ~/.codex is not used or changed.
+model = "qwen3.6:latest"
+model_provider = "local_ollama"
+model_reasoning_effort = "high"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.local_ollama]
+name = "Local Ollama (Viventium experimental)"
+base_url = "http://127.0.0.1:11436/v1"  # Workers' own model server; the Queen uses :11435
+wire_api = "responses"
+
+# Fully local: no plugin catalog sync (it ran `git ls-remote github.com/openai/plugins`) and no
+# ChatGPT apps/connectors, which need a cloud sign-in. Shell, files and AppleScript stay available.
+[features]
+plugins = false
+plugin_discovery_prefetch = false
+apps = false

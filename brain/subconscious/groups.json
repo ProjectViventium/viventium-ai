@@ -1,0 +1,27 @@
+[
+ {
+  "id": "feel",
+  "name": "Feel",
+  "say": "What moves, in Viventium and in the room"
+ },
+ {
+  "id": "remember",
+  "name": "Remember",
+  "say": "What the past has to say about this"
+ },
+ {
+  "id": "doubt",
+  "name": "Doubt",
+  "say": "The truth-seeking stack: is it actually so?"
+ },
+ {
+  "id": "ahead",
+  "name": "Think ahead",
+  "say": "What a quick answer does not have time for"
+ },
+ {
+  "id": "own",
+  "name": "Yours",
+  "say": "Cortices you added"
+ }
+]

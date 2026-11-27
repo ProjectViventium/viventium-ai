@@ -1,0 +1,1045 @@
+--- a/runtime_phase1/src/workers_projects_runtime/coordinator.py
++++ b/runtime_phase1/src/workers_projects_runtime/coordinator.py
+@@ -41,7 +41,7 @@
+         super().__init__(code)
+
+
+-COORDINATOR_SCHEMA_VERSION = 4
++COORDINATOR_SCHEMA_VERSION = 6
+
+
+ class StrictModel(BaseModel):
+@@ -92,6 +92,7 @@
+     developer_instructions: str = ""
+     library_text_chars: int = Field(default=24000, ge=0, le=262144, strict=True)
+     scope: CoordinatorScope = Field(default_factory=CoordinatorScope)
++    owned_worker_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+ class Goal(StrictModel):
+@@ -238,7 +239,8 @@
+  config_json TEXT NOT NULL, prompt_json TEXT NOT NULL, created_at TEXT NOT NULL,
+  scope_json TEXT NOT NULL DEFAULT '{}',
+  library_json TEXT NOT NULL DEFAULT '{}',
+- restore_hold INTEGER NOT NULL DEFAULT 0, restore_hold_set_hash TEXT NOT NULL DEFAULT ''
++ restore_hold INTEGER NOT NULL DEFAULT 0, restore_hold_set_hash TEXT NOT NULL DEFAULT '',
++ stop_scope TEXT NOT NULL DEFAULT ''
+ );
+ CREATE TABLE IF NOT EXISTS coordinator_turns (
+  conversation_id TEXT NOT NULL REFERENCES coordinator_conversations(conversation_id),
+@@ -249,6 +251,10 @@
+  library_json TEXT NOT NULL DEFAULT '{}',
+  restore_hold INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(conversation_id, turn_id)
++);
++CREATE TABLE IF NOT EXISTS coordinator_owned_workers (
++ worker_id TEXT PRIMARY KEY REFERENCES workers(worker_id),
++ conversation_id TEXT NOT NULL REFERENCES coordinator_conversations(conversation_id)
+ );
+ CREATE TABLE IF NOT EXISTS coordinator_goals (
+  conversation_id TEXT NOT NULL REFERENCES coordinator_conversations(conversation_id),
+@@ -299,6 +305,7 @@
+                 ("coordinator_conversations", "library_json", "TEXT NOT NULL DEFAULT '{}'"),
+                 ("coordinator_conversations", "restore_hold", "INTEGER NOT NULL DEFAULT 0"),
+                 ("coordinator_conversations", "restore_hold_set_hash", "TEXT NOT NULL DEFAULT ''"),
++                ("coordinator_conversations", "stop_scope", "TEXT NOT NULL DEFAULT ''"),
+                 ("coordinator_turns", "restore_hold", "INTEGER NOT NULL DEFAULT 0"),
+                 ("coordinator_turns", "retry_after_at", "TEXT NOT NULL DEFAULT ''"),
+                 ("coordinator_turns", "retry_attempts", "INTEGER NOT NULL DEFAULT 0"),
+@@ -365,6 +372,11 @@
+     def _assert_not_restore_held(self, conversation: dict) -> None:
+         if bool(conversation.get("restore_hold")):
+             raise CoordinatorConflict("Conversation is held for exact continuity resume")
++
++    def _assert_accepting(self, conversation: dict) -> None:
++        self._assert_not_restore_held(conversation)
++        if conversation.get("stop_scope"):
++            raise CoordinatorConflict("Conversation was stopped")
+
+     def _validated_scope(
+         self, tenant: str, owner: str, scope: CoordinatorScope
+@@ -558,6 +570,20 @@
+                 "source_event_id": identity,
+             }
+         with self.store._connect() as conn:
++            conn.execute("BEGIN IMMEDIATE")
++            for worker_id in config.owned_worker_ids:
++                worker = conn.execute("SELECT * FROM workers WHERE worker_id=? AND tenant_id=? AND owner_id=? AND project_id=?",
++                                      (worker_id, tenant, owner, scope["project_id"])).fetchone()
++                # A claim transfers only a fresh, unused workspace. A client's list
++                # alone is never proof that an existing worker belongs to it.
++                if (not worker or worker["state"] not in {"created", "idle", "ready", "paused"}
++                        or any(conn.execute(f"SELECT 1 FROM {table} WHERE worker_id=? LIMIT 1", (worker_id,)).fetchone()
++                               for table in ("runs", "scheduled_runs", "recurring_schedule_definitions", "delegations",
++                                             "provider_sessions", "coordinator_owned_workers"))
++                        or conn.execute("SELECT 1 FROM coordinator_goals WHERE worker_id=? OR "
++                                        "(json_valid(dispatch_json) AND json_extract(dispatch_json,'$.worker_id')=?)",
++                                        (worker_id, worker_id)).fetchone()):
++                    raise CoordinatorScopeError("Exclusive worker claim requires an unused owned worker")
+             if created_project_id:
+                 conn.execute(
+                     "UPDATE projects SET origin_scope_json=? "
+@@ -577,6 +603,8 @@
+                     now(),
+                 ),
+             )
++            for worker_id in config.owned_worker_ids:
++                conn.execute("INSERT INTO coordinator_owned_workers (worker_id,conversation_id) VALUES(?,?)", (worker_id, identity))
+         return self.snapshot(tenant, owner, identity)
+
+     @staticmethod
+@@ -692,7 +720,7 @@
+                     message: str, goals: list[Goal] | None = None,
+                     library_refs: list[dict] | None = None) -> dict:
+         conversation = self._conversation(tenant, owner, conversation_id)
+-        self._assert_not_restore_held(conversation)
++        self._assert_accepting(conversation)
+         if not turn_id or not message:
+             raise CoordinatorConflict("Turn ID and message are required")
+         goals = goals or []
+@@ -716,11 +744,10 @@
+                 library.resolve_refs(tenant, owner, refs))
+         with self.store._connect() as conn:
+             conn.execute("BEGIN IMMEDIATE")
+-            if conn.execute(
+-                "SELECT restore_hold FROM coordinator_conversations WHERE conversation_id=?",
++            self._assert_accepting(dict(conn.execute(
++                "SELECT restore_hold,stop_scope FROM coordinator_conversations WHERE conversation_id=?",
+                 (conversation_id,),
+-            ).fetchone()[0]:
+-                raise CoordinatorConflict("Conversation is held for exact continuity resume")
++            ).fetchone()))
+             old = conn.execute("SELECT message,library_json FROM coordinator_turns WHERE conversation_id=? AND turn_id=?", (conversation_id, turn_id)).fetchone()
+             if old and old["message"] != message:
+                 raise CoordinatorConflict("Turn idempotency key changed content")
+@@ -763,14 +790,13 @@
+
+     def accept_goals(self, tenant: str, owner: str, conversation_id: str, turn_id: str, goals: list[Goal]) -> dict:
+         conversation = self._conversation(tenant, owner, conversation_id)
+-        self._assert_not_restore_held(conversation)
++        self._assert_accepting(conversation)
+         with self.store._connect() as conn:
+             conn.execute("BEGIN IMMEDIATE")
+-            if conn.execute(
+-                "SELECT restore_hold FROM coordinator_conversations WHERE conversation_id=?",
++            self._assert_accepting(dict(conn.execute(
++                "SELECT restore_hold,stop_scope FROM coordinator_conversations WHERE conversation_id=?",
+                 (conversation_id,),
+-            ).fetchone()[0]:
+-                raise CoordinatorConflict("Conversation is held for exact continuity resume")
++            ).fetchone()))
+             if not conn.execute("SELECT 1 FROM coordinator_turns WHERE conversation_id=? AND turn_id=?", (conversation_id, turn_id)).fetchone():
+                 raise CoordinatorConflict("Source turn unavailable")
+             self._accept_goals(conn, conversation_id, turn_id, goals,
+@@ -786,7 +812,7 @@
+
+     def dispatch(self, tenant: str, owner: str, conversation_id: str, dispatch: Dispatch) -> dict:
+         conversation = self._conversation(tenant, owner, conversation_id)
+-        self._assert_not_restore_held(conversation)
++        self._assert_accepting(conversation)
+         config = CoordinatorConfig.model_validate_json(conversation["config_json"])
+         _refuse_retired_plan(config)
+         origin_scope = self._conversation_scope(conversation)
+@@ -1154,6 +1180,7 @@
+                 "library": selected_library,
+                 "library_text_chars": config.library_text_chars,
+                 "prompt": {k: v for k, v in json.loads(conversation["prompt_json"]).items() if k != "content"},
++                "stop_scope": str(conversation.get("stop_scope") or ""),
+                 "restore_hold": bool(conversation.get("restore_hold")),
+                 "restore_hold_set_hash": str(conversation.get("restore_hold_set_hash") or ""),
+                 "turns": [{k: v for k, v in t.items() if k not in {"payload_json", "library_json"}} for t in turns],
+@@ -1162,7 +1189,7 @@
+
+     def control(self, tenant: str, owner: str, conversation_id: str, goal_id: str, control: Control) -> dict:
+         conversation = self._conversation(tenant, owner, conversation_id)
+-        self._assert_not_restore_held(conversation)
++        self._assert_accepting(conversation)
+         goal = self.goal_snapshot(tenant, owner, conversation_id, goal_id)
+         if control.action not in {"stop", "dismiss"}:
+             _refuse_retired_plan(CoordinatorConfig.model_validate_json(conversation["config_json"]))
+@@ -1508,6 +1535,8 @@
+         from .conversation_provider import ChatCompletionRequest
+
+         conversation = self._conversation(tenant, owner, conversation_id)
++        if conversation.get("stop_scope"):
++            return {"turn_id": turn_id, "state": "cancelled"}
+         config = CoordinatorConfig.model_validate_json(conversation["config_json"])
+         if config.bootstrap_bundle.get("external_plan_session"):
+             with self.store._connect() as conn:
+@@ -1538,7 +1567,7 @@
+                     "message": "Selected Library material is unavailable. Refresh the selection and try again."}
+         with self.store._connect() as conn:
+             conn.execute("BEGIN IMMEDIATE")
+-            live_conversation = conn.execute("SELECT restore_hold FROM coordinator_conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
++            live_conversation = conn.execute("SELECT restore_hold,stop_scope FROM coordinator_conversations WHERE conversation_id=?", (conversation_id,)).fetchone()
+             turn = conn.execute("SELECT * FROM coordinator_turns WHERE conversation_id=? AND turn_id=?", (conversation_id, turn_id)).fetchone()
+             if not turn:
+                 raise CoordinatorConflict("Accepted turn unavailable")
+@@ -1546,7 +1575,7 @@
+                 return {"turn_id": turn_id, "state": "restore_held", "blocker": "continuity_restore_hold"}
+             if turn["origin"] != "interactive" and conn.execute("SELECT 1 FROM coordinator_turns WHERE conversation_id=? AND origin='interactive' AND request_id='' AND blocker='' LIMIT 1", (conversation_id,)).fetchone():
+                 return {"turn_id": turn_id, "state": "queued"}
+-            if turn["blocker"] == "cancelled":
++            if live_conversation["stop_scope"] or turn["blocker"] == "cancelled":
+                 return {"turn_id": turn_id, "state": "cancelled"}
+             if turn["request_id"]:
+                 return {"turn_id": turn_id, "request_id": turn["request_id"], "state": "accepted"}
+@@ -1776,9 +1805,10 @@
+         if run_id != goal["run_id"] and run["state"] == "cancelled" and not run.get("started_at"):
+             return
+         receipt = {"goal_id": goal["goal_id"], "run_id": run_id, "state": run["state"]}
++        stopped = conn.execute("SELECT stop_scope FROM coordinator_conversations WHERE conversation_id=?", (conversation_id,)).fetchone()[0]
+         conn.execute(
+-            "INSERT OR IGNORE INTO coordinator_events(conversation_id,kind,identity,payload_json,created_at) "
+-            "VALUES(?,?,?,?,?)", (conversation_id, "result_available", run_id, canonical(receipt), now()),
++            "INSERT OR IGNORE INTO coordinator_events(conversation_id,kind,identity,payload_json,created_at,delivered_turn_id) "
++            "VALUES(?,?,?,?,?,?)", (conversation_id, "result_available", run_id, canonical(receipt), now(), "stopped" if stopped else ""),
+         )
+
+     def record_run_result(self, worker_id: str, run_id: str) -> bool:
+@@ -1840,6 +1870,138 @@
+             raise CoordinatorScopeError("Current accepted conversation turn is unavailable")
+         return self.accept_goals(tenant, owner, conversation_id, request["message_id"], goals)
+
++    def _exclusive_stop_worker(self, conn: Any, tenant: str, owner: str, conversation_id: str, worker_id: str) -> bool:
++        """Positive native ownership plus no foreign conversation reference, under the close fence."""
++        claims = [row[0] for row in conn.execute(
++            "SELECT conversation_id FROM coordinator_owned_workers WHERE worker_id=? UNION "
++            "SELECT conversation_id FROM provider_sessions WHERE worker_id=? AND tenant_id=? AND owner_id=?",
++            (worker_id, worker_id, tenant, owner))]
++        delegations = conn.execute("SELECT * FROM delegations WHERE worker_id=?", (worker_id,)).fetchall()
++        for work in delegations:
++            goal = conn.execute("SELECT 1 FROM coordinator_goals WHERE conversation_id=? AND "
++                "?=conversation_id || ':' || goal_id AND ?=conversation_id || ':' || goal_id",
++                (conversation_id, work["idempotency_key"], work["origin_ref"])).fetchone()
++            if work["tenant_id"] != tenant or work["owner_id"] != owner or work["origin_surface"] != "coordinator" or not goal:
++                return False
++            claims.append(conversation_id)
++        if not claims or any(claim != conversation_id for claim in claims):
++            return False
++        return not conn.execute(
++            "SELECT 1 FROM coordinator_goals WHERE conversation_id<>? AND (worker_id=? OR "
++            "(json_valid(dispatch_json) AND json_extract(dispatch_json,'$.worker_id')=?)) LIMIT 1",
++            (conversation_id, worker_id, worker_id)).fetchone()
++
++    def stop_conversation(self, tenant: str, owner: str, conversation_id: str, close_workers: bool = False) -> dict:
++        """Fence the whole conversation; optionally close its dedicated workers too.
++
++        Close requests apply only to workers with proven exclusive ownership.
++        Shared workers retain exact goal/run Stop, including accepted follow-ups.
++        Existing rows, results, artifacts and action receipts remain readable.
++        """
++        conversation = self._conversation(tenant, owner, conversation_id)
++        self._assert_not_restore_held(conversation)
++        with self.store._connect() as conn:
++            conn.execute("BEGIN IMMEDIATE")
++            self._assert_not_restore_held(dict(conn.execute(
++                "SELECT * FROM coordinator_conversations WHERE conversation_id=?", (conversation_id,),
++            ).fetchone()))
++            conn.execute(
++                "UPDATE coordinator_conversations SET stop_scope=CASE "
++                "WHEN stop_scope='workers' OR ? THEN 'workers' ELSE 'goals' END WHERE conversation_id=?",
++                (close_workers, conversation_id),
++            )
++            close_workers = conn.execute("SELECT stop_scope FROM coordinator_conversations WHERE conversation_id=?",
++                                         (conversation_id,)).fetchone()[0] == "workers"
++            conn.execute("UPDATE coordinator_goals SET intent_state='cancelled' WHERE conversation_id=?", (conversation_id,))
++            conn.execute("UPDATE coordinator_turns SET blocker='cancelled',retry_after_at='' WHERE conversation_id=?", (conversation_id,))
++            conn.execute("UPDATE coordinator_events SET delivered_turn_id='stopped' WHERE conversation_id=? AND delivered_turn_id=''", (conversation_id,))
++            conn.execute("UPDATE coordinator_actions SET response_json=? WHERE conversation_id=? AND response_json=''",
++                         (canonical({"state": "cancelled", "blocker": "conversation_stopped"}), conversation_id))
++            workers = [row[0] for row in conn.execute(
++                "SELECT DISTINCT w.worker_id FROM workers w WHERE w.tenant_id=? AND w.owner_id=? AND w.worker_id IN ("
++                "SELECT worker_id FROM coordinator_goals WHERE conversation_id=? UNION "
++                "SELECT d.worker_id FROM delegations d JOIN coordinator_goals g "
++                "ON d.idempotency_key=g.conversation_id || ':' || g.goal_id "
++                "WHERE g.conversation_id=? AND d.tenant_id=? AND d.owner_id=? UNION "
++                "SELECT json_extract(dispatch_json,'$.worker_id') FROM coordinator_goals "
++                "WHERE conversation_id=? AND json_valid(dispatch_json) UNION "
++                "SELECT worker_id FROM provider_sessions WHERE conversation_id=? AND tenant_id=? AND owner_id=? UNION "
++                "SELECT worker_id FROM coordinator_owned_workers WHERE conversation_id=?)",
++                (tenant, owner, conversation_id, conversation_id, tenant, owner, conversation_id, conversation_id, tenant, owner, conversation_id),
++            )]
++            closing = [worker_id for worker_id in workers if close_workers and
++                       self._exclusive_stop_worker(conn, tenant, owner, conversation_id, worker_id)]
++            for worker_id in closing:
++                self.store.begin_worker_termination_in_transaction(conn, worker_id)
++            turns = [row[0] for row in conn.execute("SELECT turn_id FROM coordinator_turns WHERE conversation_id=?", (conversation_id,))]
++            runs = [dict(row) for row in conn.execute(
++                "SELECT worker_id,run_id FROM coordinator_goals WHERE conversation_id=? AND run_id<>'' UNION "
++                "SELECT g.worker_id,json_extract(a.response_json,'$.run_id') FROM coordinator_actions a "
++                "JOIN coordinator_goals g USING(conversation_id,goal_id) WHERE a.conversation_id=? "
++                "AND json_valid(a.response_json) AND json_extract(a.response_json,'$.run_id') IS NOT NULL",
++                (conversation_id, conversation_id),
++            )]
++            # Native schedule creation records its exact source run. Owner-created
++            # clocks have no such source and must survive a scoped job stop.
++            owned_runs = [row["run_id"] for row in runs]
++            if owned_runs:
++                marks = ','.join('?' for _ in owned_runs)
++                # A fired continuation can create another clock. Follow only its
++                # recorded source/occurrence chain, never every run on the worker.
++                runs = [dict(row) for row in conn.execute(
++                    f"WITH RECURSIVE owned(run_id) AS (SELECT run_id FROM runs WHERE run_id IN ({marks}) UNION "
++                    "SELECT s.queued_run_id FROM owned JOIN recurring_schedule_definitions d ON d.source_run_id=owned.run_id "
++                    "JOIN recurring_schedule_occurrences o ON o.definition_id=d.definition_id "
++                    "JOIN scheduled_runs s ON s.schedule_id=o.scheduled_run_id "
++                    "WHERE d.tenant_id=? AND d.owner_id=? AND s.queued_run_id IS NOT NULL) "
++                    "SELECT r.worker_id,r.run_id FROM runs r JOIN owned ON owned.run_id=r.run_id",
++                    (*owned_runs, tenant, owner))]
++                owned_runs = [row["run_id"] for row in runs]
++                marks = ','.join('?' for _ in owned_runs)
++                definitions = [row[0] for row in conn.execute(
++                    f"SELECT definition_id FROM recurring_schedule_definitions WHERE tenant_id=? AND owner_id=? "
++                    f"AND source_run_id IN ({marks})", (tenant, owner, *owned_runs))]
++                from .schedule_targets import _cancel_pending
++                for definition_id in definitions:
++                    conn.execute("UPDATE recurring_schedule_definitions SET active=0,enabled=0,updated_at=? WHERE definition_id=?",
++                                 (now(), definition_id))
++                    _cancel_pending(conn, definition_id, now(), "cancelled")
++                for run_id in owned_runs:
++                    conn.execute("UPDATE scheduled_runs SET state='cancelled',updated_at=? WHERE queued_run_id=? "
++                                 "AND state NOT IN ('completed','failed','cancelled')", (now(), run_id))
++        pending = False
++        for turn_id in turns:
++            try:
++                receipt = self.provider.cancel_by_idempotency(f"{conversation_id}:{turn_id}", owner, tenant_id=tenant)
++                pending |= receipt.get("capacity_released") is not True
++            except Exception:
++                # Retain the fence and continue independent worker cleanup. The
++                # same request retries confirmation, including after a restart.
++                pending = True
++        for worker_id in closing:
++            try:
++                worker = self.service.terminate_worker(worker_id, _reclaim_existing=True)
++                pending |= worker.get("state") != "terminated"
++            except Exception:
++                pending = True
++        for run in runs:
++            if run["worker_id"] not in closing:
++                self.service.cancel_run(run["worker_id"], run["run_id"])
++        # Recover a reservation Stop raced before attachment; never dispatch new work.
++        self.recover_dispatches(tenant, owner, conversation_id)
++        snapshot = self.snapshot(tenant, owner, conversation_id)
++        for target in runs:
++            run = self.store.get_run(target["run_id"]) or {}
++            pending |= run.get("state") not in {"completed", "failed", "cancelled", "interrupted"}
++        for goal in snapshot["goals"]:
++            if goal.get("run_id"):
++                run = self.store.get_run(goal["run_id"]) or {}
++                pending |= run.get("state") not in {"completed", "failed", "cancelled", "interrupted"}
++            if goal.get("worker_id") in closing:
++                worker = self.store.get_worker(goal["worker_id"]) or {}
++                pending |= worker.get("state") != "terminated"
++        return {**snapshot, "confirmation_pending": pending, "state": "stopping" if pending else "stopped"}
++
+     def cancel_turn(self, tenant: str, owner: str, conversation_id: str, turn_id: str) -> dict:
+         conversation = self._conversation(tenant, owner, conversation_id)
+         self._assert_not_restore_held(conversation)
+@@ -1860,10 +2022,11 @@
+     def retry_result_turn(self, tenant: str, owner: str, conversation_id: str, source_turn_id: str) -> dict:
+         """Retry one failed result handoff with its saved evidence, never its old request."""
+         conversation = self._conversation(tenant, owner, conversation_id)
+-        self._assert_not_restore_held(conversation)
++        self._assert_accepting(conversation)
+         retry_id = "results-retry-" + digest([conversation_id, source_turn_id])[:32]
+         with self.store._connect() as conn:
+             conn.execute("BEGIN IMMEDIATE")
++            self._assert_accepting(dict(conn.execute("SELECT * FROM coordinator_conversations WHERE conversation_id=?", (conversation_id,)).fetchone()))
+             source = conn.execute(
+                 "SELECT rowid,* FROM coordinator_turns WHERE conversation_id=? AND turn_id=?",
+                 (conversation_id, source_turn_id),
+@@ -1891,14 +2054,14 @@
+
+     def queue_result_turn(self, tenant: str, owner: str, conversation_id: str) -> str | None:
+         conversation = self._conversation(tenant, owner, conversation_id)
+-        if bool(conversation.get("restore_hold")) or not CoordinatorConfig.model_validate_json(conversation["config_json"]).wake_on_results:
++        if conversation.get("stop_scope") or bool(conversation.get("restore_hold")) or not CoordinatorConfig.model_validate_json(conversation["config_json"]).wake_on_results:
+             return None
+         with self.store._connect() as conn:
+             conn.execute("BEGIN IMMEDIATE")
+             if conn.execute(
+-                "SELECT restore_hold FROM coordinator_conversations WHERE conversation_id=?",
++                "SELECT 1 FROM coordinator_conversations WHERE conversation_id=? AND (restore_hold=1 OR stop_scope<>'')",
+                 (conversation_id,),
+-            ).fetchone()[0]:
++            ).fetchone():
+                 return None
+             # Foreground work already accepted always wins admission. A single transaction
+             # claims all current result notices into one deterministic continuation.
+@@ -2145,6 +2308,9 @@
+         for conversation in rows:
+             scope = conversation["tenant_id"], conversation["owner_id"], conversation["conversation_id"]
+             try:
++                if self._conversation(*scope).get("stop_scope"):
++                    self.stop_conversation(*scope)
++                    continue
+                 self.recover_dispatches(*scope)
+                 self.recover_retry_actions(*scope)
+                 self.refresh(*scope)
+@@ -2241,6 +2407,7 @@
+         if not session or session.get("agent_id") != "coordinator":
+             return worker
+         conversation = self._conversation(session["tenant_id"], session["owner_id"], session["conversation_id"])
++        self._assert_accepting(conversation)
+         if CoordinatorConfig.model_validate_json(conversation["config_json"]).bootstrap_bundle.get("external_plan_session"):
+             raise RetiredChatGPTPlan()
+         from urllib.parse import urlparse
+--- a/runtime_phase1/src/workers_projects_runtime/coordinator_api.py
++++ b/runtime_phase1/src/workers_projects_runtime/coordinator_api.py
+@@ -27,11 +27,16 @@
+     scope: CoordinatorScope | None = None
+     account_id: str = Field(default="", max_length=512)
+     model_id: str = Field(default="", max_length=1024)
++    owned_worker_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
+ class GoalInput(StrictModel):
+     turn_id: str
+     goals: list[Goal] = Field(max_length=1000)
++
++
++class ConversationStopInput(StrictModel):
++    close_workers: bool = False
+
+
+ class RestoreResumeInput(StrictModel):
+@@ -179,6 +184,7 @@
+             selected = selected.model_copy(update={
+                 "scope": selected.scope.model_copy(update=scope_update),
+             })
++        selected = selected.model_copy(update={"owned_worker_ids": payload.owned_worker_ids if payload else []})
+         return invoke(coordinator.create, tenant, owner, selected)
+
+     @router.get("/readiness")
+@@ -261,6 +267,10 @@
+     def stop_turn(conversation_id: str, turn_id: str, request: Request):
+         return invoke(coordinator.cancel_turn, *principal(request), conversation_id, turn_id)
+
++    @router.post("/conversations/{conversation_id}/stop")
++    def stop_conversation(conversation_id: str, payload: ConversationStopInput, request: Request):
++        return invoke(coordinator.stop_conversation, *principal(request), conversation_id, payload.close_workers)
++
+     @router.post("/conversations/{conversation_id}/turns/{turn_id}/retry-result")
+     def retry_result_turn(conversation_id: str, turn_id: str, request: Request):
+         return invoke(coordinator.retry_result_turn, *principal(request), conversation_id, turn_id)
+--- a/runtime_phase1/src/workers_projects_runtime/store.py
++++ b/runtime_phase1/src/workers_projects_runtime/store.py
+@@ -7273,6 +7273,19 @@
+             str(item["name"])
+             for item in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+         }
++        # An unused ownership claim is disposable workspace metadata. Once its
++        # conversation has history, keep the claim and worker before compute teardown.
++        if "coordinator_owned_workers" in tables and conn.execute(
++            """
++            SELECT 1 FROM coordinator_owned_workers AS claim
++            WHERE claim.worker_id = ? AND (
++                EXISTS (SELECT 1 FROM coordinator_turns WHERE conversation_id = claim.conversation_id)
++                OR EXISTS (SELECT 1 FROM coordinator_goals WHERE conversation_id = claim.conversation_id)
++            ) LIMIT 1
++            """,
++            (worker_id,),
++        ).fetchone() is not None:
++            return True
+         # These dependencies are retained history, not disposable workspace metadata.
+         # Refuse before compute teardown; claim and finalize recheck this same boundary.
+         retained_worker_refs = {
+@@ -7666,6 +7679,8 @@
+                 conn.execute("DELETE FROM workspace_capability_grants WHERE worker_id = ?", (worker_id,))
+             if "control_plane_pending_changes" in tables:
+                 conn.execute("DELETE FROM control_plane_pending_changes WHERE target_id = ?", (worker_id,))
++            if "coordinator_owned_workers" in tables:
++                conn.execute("DELETE FROM coordinator_owned_workers WHERE worker_id = ?", (worker_id,))
+             deleted = conn.execute(
+                 "DELETE FROM workers WHERE worker_id = ? AND workspace_kind = 'ephemeral'",
+                 (worker_id,),
+@@ -8296,59 +8311,70 @@
+
+     def begin_worker_termination(self, worker_id: str, *, expected_catalog_revision: int | None = None) -> tuple[dict[str, Any] | None, bool]:
+         """Publish permanent close intent once before any external runtime teardown."""
+-
++        with self._connect() as conn:
++            conn.execute("BEGIN IMMEDIATE")
++            result = self.begin_worker_termination_in_transaction(
++                conn, worker_id, expected_catalog_revision=expected_catalog_revision)
++            conn.execute("COMMIT")
++            return result
++
++    def begin_worker_termination_in_transaction(
++        self, conn: sqlite3.Connection, worker_id: str, *, expected_catalog_revision: int | None = None,
++    ) -> tuple[dict[str, Any] | None, bool]:
++        """Share the existing close fence with an owning coordinator transaction."""
+         now = utc_now()
+-        with self._connect() as conn:
+-            conn.execute("BEGIN IMMEDIATE")
+-            worker = conn.execute(
+-                "SELECT * FROM workers WHERE worker_id = ?",
+-                (worker_id,),
+-            ).fetchone()
+-            if worker is None:
+-                conn.execute("COMMIT")
+-                return None, False
+-            if expected_catalog_revision is not None and int(worker["catalog_revision"]) != expected_catalog_revision:
+-                raise WorkerClosedStoreError("This workspace changed; reload before removing it")
+-            if str(worker["state"] or "") in {"terminating", "terminated"}:
+-                conn.execute("COMMIT")
+-                return self._row(worker), False
+-            conn.execute(
+-                "UPDATE workers SET state = 'terminating', last_error = '', updated_at = ? WHERE worker_id = ?",
+-                (now, worker_id),
+-            )
+-            conn.execute(
+-                """
+-                UPDATE recurring_schedule_occurrences
+-                SET state = 'cancelled', outcome = 'workspace_closed', terminal_at = ?
+-                WHERE scheduled_run_id IN (
+-                    SELECT schedule_id FROM scheduled_runs WHERE worker_id = ?
+-                )
+-                  AND state NOT IN ('completed', 'failed', 'cancelled', 'skipped')
+-                """,
+-                (now, worker_id),
+-            )
+-            conn.execute(
+-                """
+-                UPDATE scheduled_runs
+-                SET state = 'cancelled', last_error = 'workspace_closed', updated_at = ?
+-                WHERE worker_id = ?
+-                  AND state NOT IN ('completed', 'failed', 'cancelled')
+-                """,
+-                (now, worker_id),
+-            )
+-            conn.execute(
+-                """
+-                UPDATE recurring_schedule_definitions
+-                SET enabled = 0, active = 0, updated_at = ?
+-                WHERE worker_id = ? AND active = 1
+-                """,
+-                (now, worker_id),
+-            )
+-            updated = conn.execute(
+-                "SELECT * FROM workers WHERE worker_id = ?",
+-                (worker_id,),
+-            ).fetchone()
+-            conn.execute("COMMIT")
++        worker = conn.execute(
++            "SELECT * FROM workers WHERE worker_id = ?",
++            (worker_id,),
++        ).fetchone()
++        if worker is None:
++            return None, False
++        if expected_catalog_revision is not None and int(worker["catalog_revision"]) != expected_catalog_revision:
++            raise WorkerClosedStoreError("This workspace changed; reload before removing it")
++        if str(worker["state"] or "") in {"terminating", "terminated"}:
++            return self._row(worker), False
++        conn.execute(
++            "UPDATE workers SET state = 'terminating', last_error = '', updated_at = ? WHERE worker_id = ?",
++            (now, worker_id),
++        )
++        conn.execute(
++            """
++            UPDATE recurring_schedule_occurrences
++            SET state = 'cancelled', outcome = 'workspace_closed', terminal_at = ?
++            WHERE scheduled_run_id IN (
++                SELECT schedule_id FROM scheduled_runs WHERE worker_id = ?
++            )
++              AND state NOT IN ('completed', 'failed', 'cancelled', 'skipped')
++            """,
++            (now, worker_id),
++        )
++        conn.execute(
++            """
++            UPDATE scheduled_runs
++            SET state = 'cancelled', last_error = 'workspace_closed', updated_at = ?
++            WHERE worker_id = ?
++              AND state NOT IN ('completed', 'failed', 'cancelled')
++            """,
++            (now, worker_id),
++        )
++        conn.execute(
++            """
++            UPDATE recurring_schedule_definitions
++            SET enabled = 0, active = 0, updated_at = ?
++            WHERE worker_id = ? AND active = 1
++            """,
++            (now, worker_id),
++        )
++        conn.execute(
++            "UPDATE active_work_action_uses SET status='failed',last_error='work_stopping', "
++            "lease_expires_at=NULL,updated_at=? WHERE status='pending' AND work_ref IN "
++            "(SELECT work_ref FROM delegations WHERE worker_id=?)",
++            (now, worker_id),
++        )
++        updated = conn.execute(
++            "SELECT * FROM workers WHERE worker_id = ?",
++            (worker_id,),
++        ).fetchone()
+         return self._row(updated), True
+
+     def fail_worker_termination(self, worker_id: str, message: str) -> dict[str, Any] | None:
+@@ -26506,6 +26532,8 @@
+             raise WorkAdmissionError(
+                 "worker_terminated", "The workspace has ended"
+             )
++        if str(worker["state"] or "") in {"terminating", "termination_failed"}:
++            raise WorkAdmissionError("work_stopping", "The workspace is closing")
+         if str(worker["work_stop_id"] or ""):
+             if worker["work_stop_settled_at"] is None:
+                 raise WorkAdmissionError(
+--- a/runtime_phase1/src/workers_projects_runtime/schedule_mcp.py
++++ b/runtime_phase1/src/workers_projects_runtime/schedule_mcp.py
+@@ -132,7 +132,8 @@
+                 if key not in payload.model_fields_set:
+                     values[key] = value
+             return self.service.create_target_schedule(
+-                tenant_id=principal["tenant_id"], owner_id=principal["owner_id"], target=target, **values,
++                tenant_id=principal["tenant_id"], owner_id=principal["owner_id"], target=target,
++                source_run_id=principal["run_id"], **values,
+             )
+
+     def list(self, token: str, include_inactive: bool = False, limit: int = 100):
+--- a/runtime_phase1/src/workers_projects_runtime/schedule_targets.py
++++ b/runtime_phase1/src/workers_projects_runtime/schedule_targets.py
+@@ -121,6 +121,7 @@
+             "target_kind": "TEXT NOT NULL DEFAULT 'worker'", "target_json": "TEXT NOT NULL DEFAULT '{}'",
+             "version": "INTEGER NOT NULL DEFAULT 1", "create_key": "TEXT NOT NULL DEFAULT ''",
+             "create_digest": "TEXT NOT NULL DEFAULT ''", "bootstrap_json": "TEXT NOT NULL DEFAULT '{}'",
++            "source_run_id": "TEXT NOT NULL DEFAULT ''",
+         },
+         "recurring_schedule_occurrences": {
+             "target_kind": "TEXT NOT NULL DEFAULT 'worker'", "target_json": "TEXT NOT NULL DEFAULT '{}'",
+@@ -315,7 +316,7 @@
+     return worker
+
+
+-def create_definition(service,*,tenant_id,owner_id,target,idempotency_key,instruction="",bootstrap_bundle=None,**values):
++def create_definition(service,*,tenant_id,owner_id,target,idempotency_key,instruction="",bootstrap_bundle=None,source_run_id="",**values):
+     from .models import CreateTargetScheduleRequest
+     request = CreateTargetScheduleRequest.model_validate({"target":target,"instruction":instruction,"idempotency_key":idempotency_key,"bootstrap_bundle":bootstrap_bundle,**values})
+     target=request.target.model_dump();instruction=request.instruction;bootstrap_bundle=request.bootstrap_bundle
+@@ -323,6 +324,8 @@
+     tenant=tenant_id or "local";owner=str(owner_id)
+     if not 8<=len(idempotency_key)<=128:raise ValueError("A stable create idempotency key is required")
+     requested={"target":target,"instruction":instruction,"bootstrap_bundle":bootstrap_bundle,**values}
++    if source_run_id:
++        requested["source_run_id"] = source_run_id
+     digest=hashlib.sha256(encoded(requested).encode()).hexdigest()
+     store=service.store
+     with store._connect() as conn:
+@@ -355,10 +358,19 @@
+           **spec,"next_run_at":due.isoformat(),"active":int(spec["enabled"]),"last_occurrence_at":None,
+           "target_kind":target["kind"],"target_json":encoded(target),"version":1,
+           "create_key":idempotency_key,"create_digest":digest,"bootstrap_json":encoded(bootstrap_bundle or {}),
++          "source_run_id":source_run_id,
+           "created_at":now.isoformat(),"updated_at":now.isoformat()}
+     data["enabled"]=int(data["enabled"])
+     with store._connect() as conn:
+         conn.execute("BEGIN IMMEDIATE");_authority(conn,tenant,owner)
++        if source_run_id:
++            source = conn.execute("SELECT 1 FROM runs r JOIN workers w ON w.worker_id=r.worker_id "
++                "WHERE r.run_id=? AND r.state='running' AND w.tenant_id=? AND w.owner_id=?",
++                (source_run_id,tenant,owner)).fetchone()
++            if not source:
++                raise ValueError("Schedule source run is no longer active")
++            from .coordinator import guard_coordinator_run
++            guard_coordinator_run(conn,source_run_id)
+         current=conn.execute("SELECT * FROM recurring_schedule_definitions WHERE tenant_id=? AND owner_id=? AND create_key=?",(tenant,owner,idempotency_key)).fetchone()
+         if current:
+             if current["create_digest"]!=digest:raise ScheduleCreateConflict("Schedule create idempotency key conflicts with another request")
+--- a/runtime_phase1/README.md
++++ b/runtime_phase1/README.md
+@@ -553,6 +553,23 @@
+ matching `CoordinatorConfig`. Invalid choices fail explicitly. No LibreChat or Viventium callback
+ configuration is required.
+
++`POST /v1/coordinator/conversations/{id}/stop` durably stops the entire conversation:
++queued turns, dispatches, actions and result wakeups cannot start again. Results and
++receipts remain readable. The default `{}` stops exact goal runs and preserves shared
++workers. At conversation creation, `owned_worker_ids` can transfer fresh, unused,
++owner/project-scoped workers to that conversation. Existing workers cannot be claimed.
++A client requests `{"close_workers": true}` to close exclusively owned workers and
++their schedules, queued runs and follow-ups. The runtime requires its recorded claim,
++delegation or provider-session ownership and checks for other conversation references
++in the same transaction. Referenced/shared workers stay open; only this conversation's
++runs, turns, actions, wakeups and exact source-run schedules are cancelled. Owner-created
++schedules have no source run and remain active on shared workers. Native schedule creation
++records the authenticated source run, never a caller-supplied ownership assertion. That close intent
++commits with the conversation fence before runtime cancellation. The response remains
++`stopping` until every native turn releases capacity and every selected worker confirms
++termination, then returns `stopped`. Retry the same operation to recover after a failure;
++its worker scope cannot be downgraded. Single-goal Stop retains its existing run scope.
++
+ Canonical generic instructions and tool descriptions live under
+ `src/workers_projects_runtime/prompts/coordinator*`; `prompt_manifest()` exposes their hashes.
+ Package these source files with the runtime. Focused deterministic checks are
+--- /dev/null
++++ b/runtime_phase1/tests/test_durable_conversation_stop.py
+@@ -0,0 +1,368 @@
++"""Whole-job Stop uses native close fences; exact shared-worker Stop stays scoped."""
++import json
++
++import pytest
++from fastapi import FastAPI
++from fastapi.testclient import TestClient
++from test_coordinator_existing_worker import existing, dispatch
++from workers_projects_runtime.coordinator import CoordinatorConfig, CoordinatorConflict, CoordinatorScope, CoordinatorScopeError, CoordinatorService, Goal
++from workers_projects_runtime.coordinator_api import install_coordinator_routes
++from workers_projects_runtime.store import WorkerClosedStoreError, WorkAdmissionError
++
++
++@pytest.fixture
++def owned(existing):
++    core, _, worker_id, command = existing
++    worker = core.store.get_worker(worker_id)
++    cid = core.create('local', 'owner', CoordinatorConfig(model='exact-native-model', effort='high',
++        scope=CoordinatorScope(project_id=worker['project_id']), owned_worker_ids=[worker_id]))['conversation_id']
++    core.accept_turn('local', 'owner', cid, 'turn', 'Synthetic task', [Goal(id='followup', text='Synthetic task')])
++    return core, cid, worker_id, command
++
++
++def schedule(core, worker_id):
++    worker = core.store.get_worker(worker_id)
++    return core.store.create_scheduled_run(worker_id=worker_id, project_id=worker['project_id'],
++        owner_id='owner', instruction='Unrelated wording', run_at='2026-01-01T00:00:00+00:00')
++
++
++def recurring(core, worker_id):
++    worker = core.store.get_worker(worker_id)
++    return core.store.create_recurring_schedule_definition(worker_id=worker_id, project_id=worker['project_id'],
++        tenant_id='local', owner_id='owner', scheduler_owner='glasshive_native', instruction='Unrelated wording',
++        schedule_text='', recurrence_type='interval', interval_seconds=60, local_time='', timezone_name='UTC',
++        dst_policy='skip', next_run_at='2026-01-01T00:00:00+00:00')
++
++
++def test_claim_uses_named_columns_in_an_accepted_continuity_schema(existing):
++    from test_native_continuity import _owners
++    from workers_projects_runtime.native_continuity import _require_schema
++
++    core, _, worker_id, _ = existing
++    _owners(core.store.db_path).close()
++    with core.store._connect() as conn:
++        conn.execute('DROP TABLE coordinator_owned_workers')
++        conn.execute('CREATE TABLE coordinator_owned_workers ('
++                     'conversation_id TEXT NOT NULL REFERENCES coordinator_conversations(conversation_id), '
++                     'worker_id TEXT PRIMARY KEY REFERENCES workers(worker_id))')
++        _require_schema(conn)
++    worker = core.store.get_worker(worker_id)
++    cid = core.create('local', 'owner', CoordinatorConfig(model='exact-native-model', effort='high',
++        scope=CoordinatorScope(project_id=worker['project_id']), owned_worker_ids=[worker_id]))['conversation_id']
++    with core.store._connect() as conn:
++        claim = conn.execute('SELECT worker_id,conversation_id FROM coordinator_owned_workers').fetchone()
++        assert tuple(claim) == (worker_id, cid)
++        assert not conn.execute('PRAGMA foreign_key_check').fetchall()
++
++
++@pytest.mark.parametrize('history', ['unused', 'turn', 'goal', 'dispatch'])
++def test_claimed_ephemeral_worker_cleanup_retains_conversation_dependencies(existing, monkeypatch, history):
++    from datetime import datetime, timedelta, timezone
++
++    monkeypatch.setenv('GLASSHIVE_EPHEMERAL_GC_ENABLED', 'true')
++    monkeypatch.setenv('GLASSHIVE_EPHEMERAL_RETENTION_S', '60')
++    core, _, worker_id, command = existing
++    worker = core.store.get_worker(worker_id)
++    cid = core.create('local', 'owner', CoordinatorConfig(model='exact-native-model', effort='high',
++        scope=CoordinatorScope(project_id=worker['project_id']), owned_worker_ids=[worker_id]))['conversation_id']
++    if history != 'unused':
++        goals = [Goal(id='followup', text='Synthetic task')] if history != 'turn' else []
++        core.accept_turn('local', 'owner', cid, 'turn', 'Synthetic task', goals)
++        if history == 'dispatch':
++            core.dispatch('local', 'owner', cid, command)
++    old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
++    with core.store._connect() as conn:
++        conn.execute("UPDATE workers SET workspace_kind='ephemeral',state='paused',updated_at=? WHERE worker_id=?",
++                     (old, worker_id))
++    terminated = []
++    terminate = core.service.runtime.terminate_worker
++    def record(worker):
++        terminated.append(worker['worker_id'])
++        return terminate(worker)
++    monkeypatch.setattr(core.service.runtime, 'terminate_worker', record)
++    reaped = core.service.reap_ephemeral_workspaces_once()
++    unused = history == 'unused'
++    assert terminated == ([worker_id] if unused else [])
++    assert [item['worker_id'] for item in reaped] == ([worker_id] if unused else [])
++    assert (core.store.get_worker(worker_id) is None) == unused
++    with core.store._connect() as conn:
++        claim = conn.execute('SELECT 1 FROM coordinator_owned_workers WHERE worker_id=?', (worker_id,)).fetchone()
++        assert (claim is None) == unused
++        assert conn.execute('SELECT 1 FROM coordinator_conversations WHERE conversation_id=?', (cid,)).fetchone()
++        assert not conn.execute('PRAGMA foreign_key_check').fetchall()
++    assert core.service.reap_ephemeral_workspaces_once() == []
++
++
++@pytest.mark.parametrize('initial', ['queued', 'paused', 'needs_input', 'completed', 'cancelled', 'failed'])
++def test_stop_closes_all_continuations_and_keeps_receipts(owned, initial):
++    existing = owned
++    core, cid, worker_id, command = existing
++    result = dispatch(existing)
++    core.store.update_run(result['run_id'], state=initial, output_text='Retained receipt')
++    pending = schedule(core, worker_id)
++    clock = recurring(core, worker_id)
++    claimed = schedule(core, worker_id)
++    core.store.claim_schedule(claimed['schedule_id'])
++    queued = core.store.create_run(worker_id, core.store.get_worker(worker_id)['project_id'], 'Unrelated wording')
++    core.accept_turn('local', 'owner', cid, 'next', 'Unrelated wording')
++    cancelled = []
++    core.provider.cancel_by_idempotency = lambda key, *_args, **_kwargs: (
++        cancelled.append(key) or {'capacity_released': True})
++    snapshot = core.stop_conversation('local', 'owner', cid, True)
++    assert snapshot['state'] == 'stopped' and not snapshot['confirmation_pending']
++    assert snapshot['stop_scope'] == 'workers'
++    assert core.store.get_worker(worker_id)['state'] == 'terminated'
++    assert not core.store.get_recurring_schedule_definition(clock['definition_id'], tenant_id='local', owner_id='owner')['active']
++    assert all(core.store.get_schedule(s['schedule_id'])['state'] == 'cancelled' for s in (pending, claimed))
++    assert core.store.get_run(queued['run_id'])['state'] == 'cancelled'
++    assert core.store.get_run(result['run_id'])['output_text'] == 'Retained receipt'
++    assert set(cancelled) == {cid + ':turn', cid + ':next'}
++    with pytest.raises(WorkerClosedStoreError): schedule(core, worker_id)
++    with pytest.raises(CoordinatorConflict): core.accept_turn('local', 'owner', cid, 'late', 'Unrelated wording')
++    with pytest.raises(CoordinatorConflict): core.accept_goals('local', 'owner', cid, 'turn', [Goal(id='late', text='Unrelated wording')])
++    with pytest.raises(CoordinatorConflict): core.dispatch('local', 'owner', cid, command)
++    assert core.start_turn('local', 'owner', cid, 'next')['state'] == 'cancelled'
++    core.refresh('local', 'owner', cid)
++    assert core.queue_result_turn('local', 'owner', cid) is None
++    assert core.read_result('local', 'owner', cid, 'followup')['output_text'] == 'Retained receipt'
++    with core.store._connect() as conn:
++        assert not conn.execute("SELECT 1 FROM coordinator_events WHERE conversation_id=? AND delivered_turn_id=''", (cid,)).fetchone()
++    restarted = CoordinatorService(core.store, core.service, core.provider)
++    assert restarted.stop_conversation('local', 'owner', cid)['state'] == 'stopped'
++    assert restarted._conversation('local', 'owner', cid)['stop_scope'] == 'workers'
++
++
++def test_close_fence_precedes_external_cancel_and_unconfirmed_stop_retries(owned):
++    existing = owned
++    core, cid, worker_id, _ = existing
++    result = dispatch(existing)
++    pending = schedule(core, worker_id)
++    original = core.service.runtime.terminate_worker
++    def unconfirmed(worker):
++        assert core.store.get_schedule(pending['schedule_id'])['state'] == 'cancelled'
++        assert core.store.get_worker(worker_id)['state'] == 'terminating'
++        with pytest.raises(WorkerClosedStoreError): schedule(core, worker_id)
++        raise RuntimeError('Synthetic unconfirmed compute')
++    def pending_native(*_args, **_kwargs):
++        assert core.store.get_schedule(pending['schedule_id'])['state'] == 'cancelled'
++        assert core.store.get_worker(worker_id)['state'] == 'terminating'
++        with pytest.raises(WorkAdmissionError):
++            core.store.create_run(worker_id, core.store.get_worker(worker_id)['project_id'], 'Late dispatch')
++        return {'capacity_released': False}
++    core.provider.cancel_by_idempotency = pending_native
++    core.service.runtime.terminate_worker = unconfirmed
++    waiting = core.stop_conversation('local', 'owner', cid, True)
++    assert waiting['state'] == 'stopping' and waiting['confirmation_pending']
++    core.service.runtime.terminate_worker = original
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid)['state'] == 'stopped'
++
++
++def test_provider_error_still_closes_workers_and_cannot_claim_stopped(owned):
++    existing = owned
++    core, cid, worker_id, _ = existing
++    dispatch(existing)
++    def unavailable(*_args, **_kwargs): raise ConnectionError('Synthetic unavailable provider')
++    core.provider.cancel_by_idempotency = unavailable
++    assert core.stop_conversation('local', 'owner', cid, True)['state'] == 'stopping'
++    assert core.store.get_worker(worker_id)['state'] == 'terminated'
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid)['state'] == 'stopped'
++
++
++def test_default_stop_keeps_shared_worker_and_other_work(existing):
++    core, cid, worker_id, _ = existing
++    result = dispatch(existing)
++    other = core.store.create_run(worker_id, core.store.get_worker(worker_id)['project_id'], 'Other work')
++    pending = schedule(core, worker_id)
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid)['state'] == 'stopped'
++    assert core.store.get_run(result['run_id'])['state'] == 'cancelled'
++    assert core.store.get_run(other['run_id'])['state'] == 'queued'
++    assert core.store.get_schedule(pending['schedule_id'])['state'] == 'pending'
++    assert core.store.get_worker(worker_id)['state'] != 'terminated'
++
++
++def test_native_coordinator_worker_continuations_close_too(owned):
++    existing = owned
++    core, cid, worker_id, _ = existing
++    dispatch(existing)
++    worker = core.store.get_worker(worker_id)
++    native = core.store.create_worker(worker['project_id'], 'owner', 'Coordinator', 'coordinator',
++        'openclaw-general', 'openclaw', 'openclaw-stub', 'stub-model')
++    session = core.store.upsert_provider_session(tenant_id='local', owner_id='owner', conversation_id=cid,
++        agent_id='coordinator', model_id='synthetic', project_id=worker['project_id'], worker_id=native['worker_id'],
++        workspace_dir='/synthetic/workspace', access_mode='read_write')
++    pending = schedule(core, native['worker_id'])
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid, True)['state'] == 'stopped'
++    assert core.store.get_worker(native['worker_id'])['state'] == 'terminated'
++    assert core.store.get_schedule(pending['schedule_id'])['state'] == 'cancelled'
++    assert core.store.get_provider_session_by_id(session['session_id'])
++
++
++@pytest.mark.parametrize('state', ['queued', 'running', 'paused', 'needs_input'])
++def test_scoped_conversation_stop_cancels_accepted_followup_receipts(existing, state):
++    core, cid, worker_id, _ = existing
++    result = dispatch(existing)
++    core.store.update_run(result['run_id'], state='completed', output_text='Earlier output')
++    followup = core.store.create_run(worker_id, core.store.get_worker(worker_id)['project_id'], 'Follow up')
++    # Restore a previously accepted generation without launching real compute.
++    with core.store._connect() as conn:
++        conn.execute('UPDATE runs SET state=? WHERE run_id=?', (state, followup['run_id']))
++        conn.execute('INSERT INTO coordinator_actions VALUES(?,?,?,?,?)', (cid, 'followup', 'accepted-followup',
++            json.dumps({'action': 'queue', 'run_id': result['run_id']}), json.dumps({'run_id': followup['run_id']})))
++    unrelated = core.store.create_run(worker_id, core.store.get_worker(worker_id)['project_id'], 'Other goal')
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid)['state'] == 'stopped'
++    assert core.store.get_run(followup['run_id'])['state'] == 'cancelled'
++    assert core.store.get_run(unrelated['run_id'])['state'] == 'queued'
++    assert core.store.get_run(result['run_id'])['output_text'] == 'Earlier output'
++
++
++def test_http_scope_is_authenticated_and_stop_is_idempotent(owned):
++    existing = owned
++    core, cid, worker_id, _ = existing
++    dispatch(existing)
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    app = FastAPI()
++    install_coordinator_routes(app, core, lambda request: ('local', request.headers.get('x-owner', 'owner')), lambda *_: None)
++    client = TestClient(app)
++    url = f'/v1/coordinator/conversations/{cid}/stop'
++    assert client.post(url, json={'close_workers': True}, headers={'x-owner': 'foreign'}).status_code == 403
++    assert core.store.get_worker(worker_id)['state'] != 'terminated'
++    for _ in range(2):
++        response = client.post(url, json={'close_workers': True})
++        assert response.status_code == 200 and response.json()['state'] == 'stopped'
++
++
++def test_pending_native_action_is_dismissed_with_the_worker_fence(existing):
++    core, cid, _, _ = existing
++    work = core.store.reserve_delegation(tenant_id='local', owner_id='owner', idempotency_key=cid + ':followup',
++        request_digest='synthetic', origin_ref=cid + ':followup', title='Synthetic job', goal='Synthetic task',
++        instruction='Synthetic task', origin_surface='coordinator', worker_name='Synthetic', worker_role='worker',
++        profile='openclaw-general', backend='openclaw', runtime='openclaw-stub', model='stub-model', execution_mode='docker')
++    with core.store._connect() as conn:
++        conn.execute('UPDATE coordinator_goals SET worker_id=?,run_id=?,work_ref=? WHERE conversation_id=?',
++                     (work['worker_id'], work['initial_run_id'], work['work_ref'], cid))
++    action = core.store.reserve_active_work_action(tenant_id='local', owner_id='owner', work_ref=work['work_ref'],
++        idempotency_key='pending-guidance', action='queue', payload_digest='synthetic', executor_id='synthetic-executor')
++    assert action['status'] == 'pending'
++    def cancel_native(*_args, **_kwargs):
++        kept = core.store.get_active_work_action(action['action_use_id'])
++        assert kept['status'] == 'failed' and kept['last_error'] == 'work_stopping'
++        assert kept['payload_digest'] == 'synthetic'
++        return {'capacity_released': True}
++    core.provider.cancel_by_idempotency = cancel_native
++    assert core.stop_conversation('local', 'owner', cid, True)['state'] == 'stopped'
++
++
++@pytest.mark.parametrize('used', ['run', 'schedule', 'claim', 'foreign_owner'])
++def test_cannot_claim_an_existing_or_foreign_worker(existing, used):
++    core, _, worker_id, _ = existing
++    worker = core.store.get_worker(worker_id)
++    config = CoordinatorConfig(model='exact-native-model', effort='high',
++        scope=CoordinatorScope(project_id=worker['project_id']), owned_worker_ids=[worker_id])
++    if used == 'run':
++        dispatch(existing)
++    elif used == 'schedule':
++        recurring(core, worker_id)
++    elif used == 'claim':
++        core.create('local', 'owner', config)
++    else:
++        core.store.update_worker(worker_id, owner_id='other')
++    with pytest.raises(CoordinatorScopeError):
++        core.create('local', 'owner', config)
++
++
++def test_close_request_checks_claim_again_when_worker_is_shared(owned):
++    core, cid, worker_id, command = owned
++    first = dispatch(owned)
++    config = CoordinatorConfig(model='exact-native-model', effort='high',
++        scope=CoordinatorScope(project_id=core.store.get_worker(worker_id)['project_id']))
++    other = core.create('local', 'owner', config)['conversation_id']
++    core.accept_turn('local', 'owner', other, 'turn', 'Synthetic task', [Goal(id='followup', text='Synthetic task')])
++    second = core.dispatch('local', 'owner', other, command)
++    clock = recurring(core, worker_id)
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid, True)['state'] == 'stopped'
++    assert core.store.get_run(first['run_id'])['state'] == 'cancelled'
++    assert core.store.get_run(second['run_id'])['state'] == 'queued'
++    assert core.store.get_worker(worker_id)['state'] == 'idle'
++    assert core.store.get_recurring_schedule_definition(clock['definition_id'], tenant_id='local', owner_id='owner')['active']
++    restarted = CoordinatorService(core.store, core.service, core.provider)
++    assert restarted.stop_conversation('local', 'owner', cid)['state'] == 'stopped'
++    assert core.store.get_run(second['run_id'])['state'] == 'queued'
++
++
++def test_shared_worker_stop_cancels_only_source_run_schedules(existing):
++    core, cid, worker_id, _ = existing
++    result = dispatch(existing)
++    owner_clock = recurring(core, worker_id)
++    # NativeScheduleAccess supplies this run id from the exact attempt principal.
++    with core.store._connect() as conn:
++        conn.execute("UPDATE runs SET state='running' WHERE run_id=?", (result['run_id'],))
++    values = dict(tenant_id='local', owner_id='owner', target={'kind': 'worker', 'worker_id': worker_id},
++                  instruction='Identical task', recurrence_type='interval', interval_seconds=60,
++                  source_run_id=result['run_id'], first_run_at='2099-01-01T00:00:00Z')
++    clock = core.service.create_target_schedule(idempotency_key='native-owned-clock', **values)
++    occurrence = core.service.run_recurring_schedule_now(clock['definition_id'], tenant_id='local', owner_id='owner',
++                                                       idempotency_token='native-owned-occurrence')
++    pending = core.store.get_schedule(occurrence['schedule_id'])
++    core.store.update_run(result['run_id'], state='completed')
++    core.store.claim_schedule(pending['schedule_id'])
++    descendant, _ = core.store.create_or_get_run_for_schedule(pending['schedule_id'])
++    with core.store._connect() as conn:
++        conn.execute("UPDATE runs SET state='running' WHERE run_id=?", (descendant['run_id'],))
++    nested = core.service.create_target_schedule(idempotency_key='nested-native-clock',
++        **{**values, 'source_run_id': descendant['run_id']})
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid, True)['state'] == 'stopped'
++    assert core.store.get_schedule(pending['schedule_id'])['state'] == 'cancelled'
++    assert not core.store.get_recurring_schedule_definition(clock['definition_id'], tenant_id='local', owner_id='owner')['active']
++    assert not core.store.get_recurring_schedule_definition(nested['definition_id'], tenant_id='local', owner_id='owner')['active']
++    assert core.store.get_run(descendant['run_id'])['state'] == 'cancelled'
++    assert core.store.get_recurring_schedule_definition(owner_clock['definition_id'], tenant_id='local', owner_id='owner')['active']
++    assert core.store.get_worker(worker_id)['state'] not in {'terminated', 'terminating', 'termination_failed'}
++    with pytest.raises(ValueError):
++        core.service.create_target_schedule(idempotency_key='late-native-clock', **values)
++
++
++def test_http_transfers_only_unused_workers(existing):
++    core, _, worker_id, _ = existing
++    # Native asynchronous preparation yields paused, with no previous runs.
++    core.store.update_worker(worker_id, state='paused')
++    app = FastAPI()
++    install_coordinator_routes(app, core, lambda _request: ('local', 'owner'),
++                               lambda *_: CoordinatorConfig(model='exact-native-model', effort='high'))
++    client = TestClient(app)
++    body = {'scope': {'project_id': core.store.get_worker(worker_id)['project_id']}, 'owned_worker_ids': [worker_id]}
++    response = client.post('/v1/coordinator/conversations', json=body)
++    assert response.status_code == 200, response.text
++    cid = response.json()['conversation_id']
++    assert client.post('/v1/coordinator/conversations', json=body).status_code == 403
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    response = client.post(f'/v1/coordinator/conversations/{cid}/stop', json={'close_workers': True})
++    assert response.status_code == 200 and response.json()['state'] == 'stopped'
++    assert core.store.get_worker(worker_id)['state'] == 'terminated'
++
++
++def test_stop_closes_owned_worker_and_scopes_shared_sibling(owned):
++    core, cid, worker_id, _ = owned
++    dispatch(owned)
++    project = core.store.get_worker(worker_id)['project_id']
++    shared = core.store.create_worker(project, 'owner', 'Existing', 'worker', 'openclaw-general',
++                                     'openclaw', 'openclaw-stub', 'stub-model')
++    core.accept_goals('local', 'owner', cid, 'turn', [Goal(id='shared', text='Identical task')])
++    from workers_projects_runtime.coordinator import Dispatch
++    result = core.dispatch('local', 'owner', cid,
++        Dispatch(goal_id='shared', worker_id=shared['worker_id'], instruction='Identical task'))
++    unrelated = core.store.create_run(shared['worker_id'], project, 'Identical task')
++    clock = recurring(core, shared['worker_id'])
++    core.provider.cancel_by_idempotency = lambda *_args, **_kwargs: {'capacity_released': True}
++    assert core.stop_conversation('local', 'owner', cid, True)['state'] == 'stopped'
++    assert core.store.get_worker(worker_id)['state'] == 'terminated'
++    assert core.store.get_worker(shared['worker_id'])['state'] == 'created'
++    assert core.store.get_run(result['run_id'])['state'] == 'cancelled'
++    assert core.store.get_run(unrelated['run_id'])['state'] == 'queued'
++    assert core.store.get_recurring_schedule_definition(clock['definition_id'], tenant_id='local', owner_id='owner')['active']

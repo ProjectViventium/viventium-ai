@@ -1,0 +1,188 @@
+{
+  "hf": {
+    "voice": {
+      "repo": "mlx-community/chatterbox-turbo-8bit",
+      "revision": "2f2e21a03863f86a1274d1060dcc188e7cde77e1",
+      "alias": "main",
+      "files": {
+        "added_tokens.json": {
+          "size": 418,
+          "git": "fd85325cdfafc690469b6f0e8aeb5cf4649c1450"
+        },
+        "conds.safetensors": {
+          "size": 164884,
+          "sha256": "df9ad2c54848027d94cf01f9fc0ed22bc5d3165df6e6a85c903c1124b8a78a4a"
+        },
+        "config.json": {
+          "size": 2565,
+          "git": "44e36240da70d219876698727273ba93e51acdc2"
+        },
+        "merges.txt": {
+          "size": 456318,
+          "git": "226b0752cac7789c48f0cb3ec53eda48b7be36cc"
+        },
+        "model.safetensors": {
+          "size": 706233417,
+          "sha256": "cbfe447b04d11bb2d877f1305c37945ca109ffcf74a982a533e4baa40f273ba2"
+        },
+        "model.safetensors.index.json": {
+          "size": 252012,
+          "git": "a12864666d945bc8ce0a22f4199c50dfdd207158"
+        },
+        "special_tokens_map.json": {
+          "size": 470,
+          "git": "b2d2dbc845800c78fe98656af927d831ab4ff7b7"
+        },
+        "tokenizer_config.json": {
+          "size": 3878,
+          "git": "58bc759ea7dab3dd5442f0500e493f170eeba67f"
+        },
+        "vocab.json": {
+          "size": 999186,
+          "git": "a15dd0028acd1dd2c1c2394c80e1de8f3f12a0e4"
+        }
+      }
+    },
+    "speech-tokenizer": {
+      "repo": "mlx-community/S3TokenizerV2",
+      "revision": "e0c9886f0e1c35ae85b1f27277416fb19fc72bec",
+      "alias": "main",
+      "files": {
+        "config.json": {
+          "size": 126,
+          "git": "59938193a24f642ca668d3f692be0a4c2964afcc"
+        },
+        "model.safetensors": {
+          "size": 494868984,
+          "sha256": "928726bc1f206a613d36b8f49e297eae9c5593a21bf9b92ddfe2c23f85eb92cc"
+        }
+      }
+    },
+    "turn-en": {
+      "repo": "livekit/turn-detector",
+      "revision": "ebcab0c09c2b62d926e92180d364df3aaae68a09",
+      "alias": "v1.2.2-en",
+      "files": {
+        "LICENSE": {
+          "size": 5625,
+          "git": "179ad5365c3b58dca5228ed0eb85552e5238d979"
+        },
+        "added_tokens.json": {
+          "size": 70,
+          "git": "4d36c49ff5d13268f4285dfd72c3badd273183aa"
+        },
+        "config.json": {
+          "size": 790,
+          "git": "dfb729fb3d6b00690efacca890d11cdaf5b15e02"
+        },
+        "languages.json": {
+          "size": 102,
+          "git": "62630e97b039b5924516694535e79fe0b2c5fcb6"
+        },
+        "merges.txt": {
+          "size": 466391,
+          "git": "69503b13f727ba3812b6803e97442a6de05ef5eb"
+        },
+        "onnx/model_q8.onnx": {
+          "size": 65712276,
+          "sha256": "fdd695a99bda01155fb0b5ce71d34cb9fd3902c62496db7a6c2c7bdeac310ac7"
+        },
+        "special_tokens_map.json": {
+          "size": 1110,
+          "git": "e44b8e0769b12074aa32c0002f96d840e4a27ee4"
+        },
+        "tokenizer.json": {
+          "size": 3523486,
+          "git": "e5e872187cde5896bbcc1f0bcff0274076b03431"
+        },
+        "tokenizer_config.json": {
+          "size": 4127,
+          "git": "993dd2bad28ead01bd8ee8bcced049cc0a77c600"
+        },
+        "vocab.json": {
+          "size": 800662,
+          "git": "0ad5ecc2035b7031b88afb544ee95e2d49baa484"
+        }
+      }
+    },
+    "turn-multilingual": {
+      "repo": "livekit/turn-detector",
+      "revision": "87e35fcb1e60a569bea70346191c4886ea92e281",
+      "alias": "v0.4.1-intl",
+      "files": {
+        "LICENSE": {
+          "size": 5625,
+          "git": "179ad5365c3b58dca5228ed0eb85552e5238d979"
+        },
+        "added_tokens.json": {
+          "size": 605,
+          "git": "482ced4679301bf287ebb310bdd1790eb4514232"
+        },
+        "config.json": {
+          "size": 738,
+          "git": "60af305e20c6b5d93c860439d5694cff1b4b0e3d"
+        },
+        "languages.json": {
+          "size": 1296,
+          "git": "c2b2f5d8e1b52dd215a9a5c017b6096847c6bed0"
+        },
+        "merges.txt": {
+          "size": 1671853,
+          "git": "31349551d90c7606f325fe0f11bbb8bd5fa0d7c7"
+        },
+        "onnx/model_q8.onnx": {
+          "size": 396316457,
+          "sha256": "bd2c30776882138a1d95a07faddc13756fe1a35bef6323505f1124fca349bc9c"
+        },
+        "special_tokens_map.json": {
+          "size": 613,
+          "git": "ac23c0aaa2434523c494330aeb79c58395378103"
+        },
+        "tokenizer.json": {
+          "size": 11421896,
+          "sha256": "9c5ae00e602b8860cbd784ba82a8aa14e8feecec692e7076590d014d7b7fdafa"
+        },
+        "tokenizer_config.json": {
+          "size": 4860,
+          "git": "f2e8bec557cbb36f2867c64fa7c8fd7ec1c5d872"
+        },
+        "vocab.json": {
+          "size": 2776833,
+          "git": "4783fe10ac3adce15ac8f358ef5462739852c569"
+        }
+      }
+    }
+  },
+  "harnesses": {
+    "claude": {
+      "version": "2.1.331",
+      "platforms": {
+        "arm64": {
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.331.tgz",
+          "sha512": "4954261b4e4cec6fcbadbaf7a945c3417695ebe8c41ee751f6b49db068ccd3fcc18db64987f982f35d83c13deb1c203cac694f0be1cb7d3c1bbea98d41634967"
+        },
+        "x86_64": {
+          "url": "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-x64/-/claude-code-darwin-x64-2.1.331.tgz",
+          "sha512": "f5451ba5db6b1577d0597002c1b96abcf7cacf965db4eb5b8a2c1b458de1d69ceba8672298b6d425466dcbf4ac1ce5da4ea489433153b8eea24aa6484f214a5d"
+        }
+      }
+    },
+    "codex": {
+      "version": "0.172.0",
+      "platforms": {
+        "arm64": {
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.172.0-darwin-arm64.tgz",
+          "sha512": "076dfdc04ee919e3a68f295fa8bca60c8c2e2f8420411ee9419739a611e9677b7c515927a3d012ddd34f129ae6ec0cd91f0de47f623a51ffae3857e319e8042d"
+        },
+        "x86_64": {
+          "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.172.0-darwin-x64.tgz",
+          "sha512": "86b2fd350c07f44d16a8af18a1fa9ee9f8a91355c3497c7f0b67f048e6a05dd4d17236173ab7d0f5f48229a2995ebff19b8dc04ddb114a3186027f082611a684"
+        }
+      }
+    }
+  },
+  "homebrew-script": {
+    "revision": "c9c975046f78e6e6d662deb801bd461ebd6a54ed",
+    "sha256": "8fd2f1a5287a7c2e3d7362924c677edcc04c5a0e16448c77132d056bc88cf1ed"
+  }
+}

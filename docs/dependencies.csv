@@ -1,0 +1,902 @@
+part,name,version,licence
+python: Light,aiofiles,25.1.0,Apache-2.0
+python: Light,aiohappyeyeballs,2.7.1,PSF-2.0
+python: Light,aiohttp,3.14.5,Apache-2.0 AND MIT
+python: Light,aiosignal,1.4.0,Apache 2.0
+python: Light,annotated-doc,0.0.5,MIT
+python: Light,annotated-types,0.8.0,MIT
+python: Light,anthropic,1.17.0,MIT
+python: Light,anyio,4.16.0,MIT
+python: Light,attrs,26.1.0,MIT
+python: Light,av,19.0.2,BSD-3-Clause
+python: Light,certifi,2026.10.23,MPL-2.0
+python: Light,cffi,2.1.1,MIT-0
+python: Light,charset-normalizer,3.5.2,MIT
+python: Light,click,8.5.1,BSD-3-Clause
+python: Light,colorama,0.4.6,BSD License
+python: Light,docstring_parser,0.18.0,MIT
+python: Light,eval_type_backport,0.4.0,MIT
+python: Light,filelock,4.2.9,MIT
+python: Light,flatbuffers,25.12.19,Apache 2.0
+python: Light,frozenlist,1.8.0,Apache-2.0
+python: Light,fsspec,2026.9.0,BSD-3-Clause
+python: Light,googleapis-common-protos,1.76.0,Apache-2.0
+python: Light,greenlet,3.5.6,MIT AND PSF-2.0
+python: Light,grpcio,1.85.1,Apache-2.0
+python: Light,h11,0.16.0,MIT
+python: Light,hf-xet,1.8.0,Apache-2.0
+python: Light,httpcore,1.0.9,BSD-3-Clause
+python: Light,httpcore2,2.16.0,BSD-3-Clause
+python: Light,httpx,0.28.1,BSD-3-Clause
+python: Light,httpx2,2.16.0,BSD-3-Clause
+python: Light,huggingface_hub,2.4.0,Apache-2.0
+python: Light,idna,3.20,BSD-3-Clause
+python: Light,Jinja2,3.1.6,BSD License
+python: Light,jiter,0.19.0,MIT
+python: Light,json_repair,0.63.5,MIT
+python: Light,livekit,1.2.0,Apache-2.0
+python: Light,livekit-agents,1.8.11,Apache-2.0
+python: Light,livekit-api,1.2.2,Apache-2.0
+python: Light,livekit-blingfire,1.2.0,Apache-2.0
+python: Light,livekit-local-inference,0.2.7,Apache-2.0 AND LicenseRef-LiveKit-Model
+python: Light,livekit-plugins-anthropic,1.8.11,Apache-2.0
+python: Light,livekit-plugins-assemblyai,1.8.11,Apache-2.0
+python: Light,livekit-plugins-openai,1.8.11,Apache-2.0
+python: Light,livekit-plugins-silero,1.8.11,Apache-2.0
+python: Light,livekit-plugins-turn-detector,1.8.11,Apache-2.0
+python: Light,livekit-plugins-xai,1.8.11,Apache-2.0
+python: Light,livekit-protocol,1.1.31,Apache-2.0
+python: Light,markdown-it-py,4.2.0,MIT License
+python: Light,MarkupSafe,3.0.4,BSD-3-Clause
+python: Light,mdurl,0.1.2,MIT License
+python: Light,multidict,7.2.1,Apache-2.0
+python: Light,nest-asyncio,1.6.0,BSD
+python: Light,numpy,2.5.4,BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+python: Light,onnxruntime,1.31.1,MIT License
+python: Light,openai,3.46.0,Apache-2.0
+python: Light,opentelemetry-api,1.45.2,Apache-2.0
+python: Light,opentelemetry-exporter-http-transport,0.66b2,Apache-2.0
+python: Light,opentelemetry-exporter-otlp,1.45.2,Apache-2.0
+python: Light,opentelemetry-exporter-otlp-common,0.66b2,Apache-2.0
+python: Light,opentelemetry-exporter-otlp-proto-common,1.45.2,Apache-2.0
+python: Light,opentelemetry-exporter-otlp-proto-grpc,1.45.2,Apache-2.0
+python: Light,opentelemetry-exporter-otlp-proto-http,1.45.2,Apache-2.0
+python: Light,opentelemetry-proto,1.45.2,Apache-2.0
+python: Light,opentelemetry-sdk,1.45.2,Apache-2.0
+python: Light,opentelemetry-semantic-conventions,0.66b2,Apache-2.0
+python: Light,packaging,26.3,Apache-2.0 OR BSD-2-Clause
+python: Light,pillow,13.0.0,MIT-CMU
+python: Light,playwright,1.64.1,Apache-2.0
+python: Light,prometheus_client,0.26.0,Apache-2.0 AND BSD-2-Clause
+python: Light,propcache,0.5.4,Apache-2.0
+python: Light,protobuf,7.36.2,3-Clause BSD License
+python: Light,psutil,7.2.2,BSD-3-Clause
+python: Light,pycparser,3.12,BSD-3-Clause
+python: Light,pydantic,2.14.3,MIT
+python: Light,pydantic_core,2.50.4,MIT
+python: Light,pyee,14.0.0,MIT
+python: Light,Pygments,2.21.0,BSD-2-Clause
+python: Light,PyJWT,2.15.1,MIT
+python: Light,PyYAML,6.0.3,MIT
+python: Light,regex,2026.11.7,Apache-2.0 AND CNRI-Python
+python: Light,requests,2.34.2,Apache-2.0
+python: Light,rich,15.0.0,MIT
+python: Light,safetensors,0.8.0,Apache Software License
+python: Light,shellingham,1.5.4,ISC License
+python: Light,sniffio,1.3.1,MIT OR Apache-2.0
+python: Light,sounddevice,0.5.6,MIT
+python: Light,tokenizers,0.23.3,Apache Software License
+python: Light,tqdm,4.70.1,MPL-2.0 AND MIT
+python: Light,transformers,5.22.2,Apache 2.0 License
+python: Light,truststore,0.10.5,MIT
+python: Light,typer,0.28.0,MIT
+python: Light,types-protobuf,7.35.1.20260906,Apache-2.0
+python: Light,typing-inspection,0.4.5,MIT
+python: Light,typing_extensions,4.16.0,PSF-2.0
+python: Light,urllib3,2.8.0,MIT
+python: Light,watchfiles,1.3.0,MIT
+python: Light,yarl,1.25.1,Apache-2.0
+python: her local voice (speech/tts),annotated-doc,0.0.5,MIT
+python: her local voice (speech/tts),annotated-types,0.8.0,MIT
+python: her local voice (speech/tts),anyio,4.16.0,MIT
+python: her local voice (speech/tts),attrs,26.1.0,MIT
+python: her local voice (speech/tts),certifi,2026.10.23,MPL-2.0
+python: her local voice (speech/tts),cffi,2.1.1,MIT-0
+python: her local voice (speech/tts),charset-normalizer,3.5.2,MIT
+python: her local voice (speech/tts),click,8.5.1,BSD-3-Clause
+python: her local voice (speech/tts),fastapi,0.162.2,MIT
+python: her local voice (speech/tts),filelock,4.2.9,MIT
+python: her local voice (speech/tts),fsspec,2026.9.0,BSD-3-Clause
+python: her local voice (speech/tts),h11,0.16.0,MIT
+python: her local voice (speech/tts),hf-xet,1.8.0,Apache-2.0
+python: her local voice (speech/tts),httpcore2,2.16.0,BSD-3-Clause
+python: her local voice (speech/tts),httptools,0.9.0,MIT
+python: her local voice (speech/tts),httpx2,2.16.0,BSD-3-Clause
+python: her local voice (speech/tts),huggingface_hub,2.4.0,Apache-2.0
+python: her local voice (speech/tts),idna,3.20,BSD-3-Clause
+python: her local voice (speech/tts),Jinja2,3.1.6,BSD License
+python: her local voice (speech/tts),jsonschema,4.26.0,MIT
+python: her local voice (speech/tts),jsonschema-specifications,2025.9.1,MIT
+python: her local voice (speech/tts),markdown-it-py,4.2.0,MIT License
+python: her local voice (speech/tts),MarkupSafe,3.0.4,BSD-3-Clause
+python: her local voice (speech/tts),mdurl,0.1.2,MIT License
+python: her local voice (speech/tts),miniaudio,1.72,MIT
+python: her local voice (speech/tts),mistral_common,1.9.1,Apache-2.0
+python: her local voice (speech/tts),mlx,0.32.4,MIT
+python: her local voice (speech/tts),mlx-audio,0.6.4,MIT
+python: her local voice (speech/tts),mlx-metal,0.32.4,MIT
+python: her local voice (speech/tts),numpy,2.5.4,BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+python: her local voice (speech/tts),opentelemetry-api,1.45.2,Apache-2.0
+python: her local voice (speech/tts),packaging,26.3,Apache-2.0 OR BSD-2-Clause
+python: her local voice (speech/tts),pillow,13.0.0,MIT-CMU
+python: her local voice (speech/tts),pycountry,26.2.16,LGPL-2.1-only
+python: her local voice (speech/tts),pycparser,3.12,BSD-3-Clause
+python: her local voice (speech/tts),pydantic,2.14.3,MIT
+python: her local voice (speech/tts),pydantic-extra-types,2.11.1,MIT
+python: her local voice (speech/tts),pydantic_core,2.50.4,MIT
+python: her local voice (speech/tts),Pygments,2.21.0,BSD-2-Clause
+python: her local voice (speech/tts),python-dotenv,1.2.4,BSD-3-Clause
+python: her local voice (speech/tts),python-multipart,0.0.33,Apache-2.0
+python: her local voice (speech/tts),PyYAML,6.0.3,MIT
+python: her local voice (speech/tts),referencing,0.37.0,MIT
+python: her local voice (speech/tts),regex,2026.11.7,Apache-2.0 AND CNRI-Python
+python: her local voice (speech/tts),requests,2.34.2,Apache-2.0
+python: her local voice (speech/tts),rich,15.0.0,MIT
+python: her local voice (speech/tts),rpds-py,2026.9.1,MIT
+python: her local voice (speech/tts),safetensors,0.8.0,Apache Software License
+python: her local voice (speech/tts),scipy,1.18.1,BSD License
+python: her local voice (speech/tts),sentencepiece,0.2.3,Apache-2.0
+python: her local voice (speech/tts),setuptools,80.10.2,MIT
+python: her local voice (speech/tts),shellingham,1.5.4,ISC License
+python: her local voice (speech/tts),sounddevice,0.5.6,MIT
+python: her local voice (speech/tts),soundfile,0.14.0,BSD 3-Clause License
+python: her local voice (speech/tts),soxr,1.1.0,LGPL-2.1-or-later
+python: her local voice (speech/tts),starlette,1.10.0,BSD-3-Clause
+python: her local voice (speech/tts),tiktoken,0.14.0,not declared in its metadata; its licence file is MIT
+python: her local voice (speech/tts),tokenizers,0.23.3,Apache Software License
+python: her local voice (speech/tts),tqdm,4.70.1,MPL-2.0 AND MIT
+python: her local voice (speech/tts),transformers,5.22.2,Apache 2.0 License
+python: her local voice (speech/tts),truststore,0.10.5,MIT
+python: her local voice (speech/tts),typer,0.28.0,MIT
+python: her local voice (speech/tts),typing-inspection,0.4.5,MIT
+python: her local voice (speech/tts),typing_extensions,4.16.0,PSF-2.0
+python: her local voice (speech/tts),urllib3,2.8.0,MIT
+python: her local voice (speech/tts),uvicorn,0.54.0,BSD-3-Clause
+python: her local voice (speech/tts),uvloop,0.23.0,MIT License
+python: her local voice (speech/tts),watchfiles,1.3.0,MIT
+python: her local voice (speech/tts),webrtcvad-wheels,2.0.14.post1,MIT
+python: her local voice (speech/tts),websockets,17.4,BSD-3-Clause
+python: pictures (tools/media),annotated-doc,0.0.5,MIT
+python: pictures (tools/media),annotated-types,0.8.0,MIT
+python: pictures (tools/media),anyio,4.16.0,MIT
+python: pictures (tools/media),certifi,2026.10.23,MPL-2.0
+python: pictures (tools/media),charset-normalizer,3.5.2,MIT
+python: pictures (tools/media),click,8.5.0,BSD-3-Clause
+python: pictures (tools/media),cmake,4.4.4,Apache 2.0
+python: pictures (tools/media),contourpy,1.4.0,BSD-3-Clause
+python: pictures (tools/media),cycler,0.12.1,BSD License
+python: pictures (tools/media),filelock,4.2.9,MIT
+python: pictures (tools/media),fonttools,4.68.0,MIT
+python: pictures (tools/media),fsspec,2026.9.0,BSD-3-Clause
+python: pictures (tools/media),h11,0.16.0,MIT
+python: pictures (tools/media),hf-xet,1.8.0,Apache-2.0
+python: pictures (tools/media),hf_transfer,0.1.9,not declared in its metadata; its licence file is Apache-2.0
+python: pictures (tools/media),httpcore,1.0.9,BSD-3-Clause
+python: pictures (tools/media),httpx,0.28.1,BSD-3-Clause
+python: pictures (tools/media),huggingface_hub,1.33.0,Apache-2.0
+python: pictures (tools/media),idna,3.20,BSD-3-Clause
+python: pictures (tools/media),Jinja2,3.1.6,BSD License
+python: pictures (tools/media),kiwisolver,1.5.1,BSD License
+python: pictures (tools/media),markdown-it-py,4.2.0,MIT License
+python: pictures (tools/media),MarkupSafe,3.0.4,BSD-3-Clause
+python: pictures (tools/media),matplotlib,3.11.2,Python Software Foundation License
+python: pictures (tools/media),mdurl,0.1.2,MIT License
+python: pictures (tools/media),mflux,0.23.0,MIT (its metadata's licence text)
+python: pictures (tools/media),mlx,0.32.4,MIT
+python: pictures (tools/media),mlx-metal,0.32.4,MIT
+python: pictures (tools/media),mpmath,1.3.0,BSD
+python: pictures (tools/media),networkx,3.7,BSD-3-Clause
+python: pictures (tools/media),numpy,2.5.4,BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+python: pictures (tools/media),opencv-python,4.14.0.94,Apache 2.0
+python: pictures (tools/media),packaging,26.3,Apache-2.0 OR BSD-2-Clause
+python: pictures (tools/media),piexif,1.1.3,MIT
+python: pictures (tools/media),pillow,12.3.0,MIT-CMU
+python: pictures (tools/media),platformdirs,4.14.5,MIT
+python: pictures (tools/media),protobuf,7.36.2,3-Clause BSD License
+python: pictures (tools/media),pydantic,2.14.3,MIT
+python: pictures (tools/media),pydantic_core,2.50.4,MIT
+python: pictures (tools/media),Pygments,2.21.0,BSD-2-Clause
+python: pictures (tools/media),pyparsing,3.3.3,MIT
+python: pictures (tools/media),python-dateutil,4.0.0,BSD-3-Clause
+python: pictures (tools/media),PyYAML,6.0.3,MIT
+python: pictures (tools/media),regex,2026.9.29,Apache-2.0 AND CNRI-Python
+python: pictures (tools/media),requests,2.34.2,Apache-2.0
+python: pictures (tools/media),rich,15.0.0,MIT
+python: pictures (tools/media),safetensors,0.8.0,Apache Software License
+python: pictures (tools/media),sentencepiece,0.2.3,Apache-2.0
+python: pictures (tools/media),setuptools,84.2.1,MIT
+python: pictures (tools/media),shellingham,1.5.4,ISC License
+python: pictures (tools/media),sympy,1.14.0,BSD
+python: pictures (tools/media),tokenizers,0.23.3,Apache Software License
+python: pictures (tools/media),toml,0.10.2,MIT
+python: pictures (tools/media),torch,2.15.0,Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND ISC AND MIT AND Zlib
+python: pictures (tools/media),tqdm,4.70.1,MPL-2.0 AND MIT
+python: pictures (tools/media),transformers,5.22.1,Apache 2.0 License
+python: pictures (tools/media),typer,0.27.3,MIT
+python: pictures (tools/media),typing-inspection,0.4.5,MIT
+python: pictures (tools/media),typing_extensions,4.16.0,PSF-2.0
+python: pictures (tools/media),tzdata,2026.6,Apache-2.0
+python: pictures (tools/media),urllib3,2.8.0,MIT
+python: sound checks for tests (tools/soundcheck),annotated-doc,0.0.5,MIT
+python: sound checks for tests (tools/soundcheck),annotated-types,0.8.0,MIT
+python: sound checks for tests (tools/soundcheck),anyio,4.16.0,MIT
+python: sound checks for tests (tools/soundcheck),cffi,2.1.1,MIT-0
+python: sound checks for tests (tools/soundcheck),click,8.5.1,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),filelock,4.2.10,MIT
+python: sound checks for tests (tools/soundcheck),fsspec,2026.9.0,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),h11,0.16.0,MIT
+python: sound checks for tests (tools/soundcheck),hf-xet,1.8.0,Apache-2.0
+python: sound checks for tests (tools/soundcheck),httpcore2,2.16.0,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),httpx2,2.16.0,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),huggingface_hub,2.4.0,Apache-2.0
+python: sound checks for tests (tools/soundcheck),idna,3.20,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),Jinja2,3.1.6,BSD License
+python: sound checks for tests (tools/soundcheck),markdown-it-py,4.2.0,MIT License
+python: sound checks for tests (tools/soundcheck),MarkupSafe,3.0.4,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),mdurl,0.1.2,MIT License
+python: sound checks for tests (tools/soundcheck),mpmath,1.3.0,BSD
+python: sound checks for tests (tools/soundcheck),networkx,3.7,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),numpy,2.5.4,BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
+python: sound checks for tests (tools/soundcheck),packaging,26.3,Apache-2.0 OR BSD-2-Clause
+python: sound checks for tests (tools/soundcheck),praat-parselmouth,0.4.7,GPLv3
+python: sound checks for tests (tools/soundcheck),pycparser,3.12,BSD-3-Clause
+python: sound checks for tests (tools/soundcheck),pydantic,2.14.3,MIT
+python: sound checks for tests (tools/soundcheck),pydantic_core,2.50.4,MIT
+python: sound checks for tests (tools/soundcheck),Pygments,2.21.0,BSD-2-Clause
+python: sound checks for tests (tools/soundcheck),PyYAML,6.0.3,MIT
+python: sound checks for tests (tools/soundcheck),regex,2026.11.9,Apache-2.0 AND CNRI-Python
+python: sound checks for tests (tools/soundcheck),rich,15.0.0,MIT
+python: sound checks for tests (tools/soundcheck),safetensors,0.8.0,Apache Software License
+python: sound checks for tests (tools/soundcheck),setuptools,84.2.1,MIT
+python: sound checks for tests (tools/soundcheck),shellingham,1.5.4,ISC License
+python: sound checks for tests (tools/soundcheck),soundfile,0.14.0,BSD 3-Clause License
+python: sound checks for tests (tools/soundcheck),sympy,1.14.0,BSD
+python: sound checks for tests (tools/soundcheck),tokenizers,0.23.3,Apache Software License
+python: sound checks for tests (tools/soundcheck),torch,2.15.0,Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND ISC AND MIT AND Zlib
+python: sound checks for tests (tools/soundcheck),tqdm,4.70.1,MPL-2.0 AND MIT
+python: sound checks for tests (tools/soundcheck),transformers,5.22.2,Apache 2.0 License
+python: sound checks for tests (tools/soundcheck),truststore,0.10.5,MIT
+python: sound checks for tests (tools/soundcheck),typer,0.29.0,MIT
+python: sound checks for tests (tools/soundcheck),typing-inspection,0.4.5,MIT
+python: sound checks for tests (tools/soundcheck),typing_extensions,4.16.0,PSF-2.0
+npm: call page (production),@ai-sdk/gateway,2.0.17,Apache-2.0
+npm: call page (production),@ai-sdk/provider-utils,3.0.18,Apache-2.0
+npm: call page (production),@ai-sdk/provider,2.0.0,Apache-2.0
+npm: call page (production),@antfu/install-pkg,1.1.0,MIT
+npm: call page (production),@babel/runtime,7.29.14,MIT
+npm: call page (production),@braintree/sanitize-url,7.1.1,MIT
+npm: call page (production),@bufbuild/protobuf,1.10.1,(Apache-2.0 AND BSD-3-Clause)
+npm: call page (production),@chevrotain/types,11.1.2,Apache-2.0
+npm: call page (production),@dimforge/rapier3d-compat,0.12.0,Apache-2.0
+npm: call page (production),@floating-ui/core,1.7.3,MIT
+npm: call page (production),@floating-ui/core,1.8.0,MIT
+npm: call page (production),@floating-ui/dom,1.7.4,MIT
+npm: call page (production),@floating-ui/dom,1.7.6,MIT
+npm: call page (production),@floating-ui/react-dom,2.1.5,MIT
+npm: call page (production),@floating-ui/utils,0.2.10,MIT
+npm: call page (production),@floating-ui/utils,0.2.12,MIT
+npm: call page (production),@iconify/types,2.0.0,MIT
+npm: call page (production),@iconify/utils,3.1.0,MIT
+npm: call page (production),@img/sharp-darwin-arm64,0.34.3,Apache-2.0
+npm: call page (production),@img/sharp-libvips-darwin-arm64,1.2.0,LGPL-3.0-or-later
+npm: call page (production),@livekit/components-core,0.12.15,Apache-2.0
+npm: call page (production),@livekit/components-react,2.9.24,Apache-2.0
+npm: call page (production),@livekit/krisp-noise-filter,0.2.16,SEE LICENSE IN https://livekit.io/legal/terms-of-service
+npm: call page (production),@livekit/mutex,1.1.1,Apache-2.0
+npm: call page (production),@livekit/protocol,1.48.0,Apache-2.0
+npm: call page (production),@livekit/protocol,1.50.4,Apache-2.0
+npm: call page (production),@mermaid-js/parser,1.1.1,MIT
+npm: call page (production),@next/env,15.5.27,MIT
+npm: call page (production),@next/swc-darwin-arm64,15.5.27,MIT
+npm: call page (production),@opentelemetry/api,1.9.0,Apache-2.0
+npm: call page (production),@paper-design/shaders-react,0.0.82,Apache-2.0
+npm: call page (production),@paper-design/shaders,0.0.82,Apache-2.0
+npm: call page (production),@phosphor-icons/react,2.1.10,MIT
+npm: call page (production),@radix-ui/number,1.1.1,MIT
+npm: call page (production),@radix-ui/primitive,1.1.3,MIT
+npm: call page (production),@radix-ui/react-accessible-icon,1.1.7,MIT
+npm: call page (production),@radix-ui/react-accordion,1.2.12,MIT
+npm: call page (production),@radix-ui/react-alert-dialog,1.1.15,MIT
+npm: call page (production),@radix-ui/react-arrow,1.1.7,MIT
+npm: call page (production),@radix-ui/react-aspect-ratio,1.1.7,MIT
+npm: call page (production),@radix-ui/react-avatar,1.1.10,MIT
+npm: call page (production),@radix-ui/react-checkbox,1.3.3,MIT
+npm: call page (production),@radix-ui/react-collapsible,1.1.12,MIT
+npm: call page (production),@radix-ui/react-collection,1.1.7,MIT
+npm: call page (production),@radix-ui/react-compose-refs,1.1.2,MIT
+npm: call page (production),@radix-ui/react-context-menu,2.2.16,MIT
+npm: call page (production),@radix-ui/react-context,1.1.2,MIT
+npm: call page (production),@radix-ui/react-context,1.1.3,MIT
+npm: call page (production),@radix-ui/react-dialog,1.1.15,MIT
+npm: call page (production),@radix-ui/react-direction,1.1.1,MIT
+npm: call page (production),@radix-ui/react-dismissable-layer,1.1.11,MIT
+npm: call page (production),@radix-ui/react-dropdown-menu,2.1.16,MIT
+npm: call page (production),@radix-ui/react-focus-guards,1.1.3,MIT
+npm: call page (production),@radix-ui/react-focus-scope,1.1.7,MIT
+npm: call page (production),@radix-ui/react-form,0.1.8,MIT
+npm: call page (production),@radix-ui/react-hover-card,1.1.15,MIT
+npm: call page (production),@radix-ui/react-id,1.1.1,MIT
+npm: call page (production),@radix-ui/react-label,2.1.7,MIT
+npm: call page (production),@radix-ui/react-menu,2.1.16,MIT
+npm: call page (production),@radix-ui/react-menubar,1.1.16,MIT
+npm: call page (production),@radix-ui/react-navigation-menu,1.2.14,MIT
+npm: call page (production),@radix-ui/react-one-time-password-field,0.1.8,MIT
+npm: call page (production),@radix-ui/react-password-toggle-field,0.1.3,MIT
+npm: call page (production),@radix-ui/react-popover,1.1.15,MIT
+npm: call page (production),@radix-ui/react-popper,1.2.8,MIT
+npm: call page (production),@radix-ui/react-portal,1.1.9,MIT
+npm: call page (production),@radix-ui/react-presence,1.1.5,MIT
+npm: call page (production),@radix-ui/react-primitive,2.1.3,MIT
+npm: call page (production),@radix-ui/react-primitive,2.1.4,MIT
+npm: call page (production),@radix-ui/react-progress,1.1.7,MIT
+npm: call page (production),@radix-ui/react-progress,1.1.8,MIT
+npm: call page (production),@radix-ui/react-radio-group,1.3.8,MIT
+npm: call page (production),@radix-ui/react-roving-focus,1.1.11,MIT
+npm: call page (production),@radix-ui/react-scroll-area,1.2.10,MIT
+npm: call page (production),@radix-ui/react-select,2.2.6,MIT
+npm: call page (production),@radix-ui/react-separator,1.1.7,MIT
+npm: call page (production),@radix-ui/react-separator,1.1.8,MIT
+npm: call page (production),@radix-ui/react-slider,1.3.6,MIT
+npm: call page (production),@radix-ui/react-slot,1.2.3,MIT
+npm: call page (production),@radix-ui/react-slot,1.2.4,MIT
+npm: call page (production),@radix-ui/react-switch,1.2.6,MIT
+npm: call page (production),@radix-ui/react-tabs,1.1.13,MIT
+npm: call page (production),@radix-ui/react-toast,1.2.15,MIT
+npm: call page (production),@radix-ui/react-toggle-group,1.1.11,MIT
+npm: call page (production),@radix-ui/react-toggle,1.1.10,MIT
+npm: call page (production),@radix-ui/react-toolbar,1.1.11,MIT
+npm: call page (production),@radix-ui/react-tooltip,1.2.8,MIT
+npm: call page (production),@radix-ui/react-use-callback-ref,1.1.1,MIT
+npm: call page (production),@radix-ui/react-use-controllable-state,1.2.2,MIT
+npm: call page (production),@radix-ui/react-use-effect-event,0.0.2,MIT
+npm: call page (production),@radix-ui/react-use-escape-keydown,1.1.1,MIT
+npm: call page (production),@radix-ui/react-use-is-hydrated,0.1.0,MIT
+npm: call page (production),@radix-ui/react-use-layout-effect,1.1.1,MIT
+npm: call page (production),@radix-ui/react-use-previous,1.1.1,MIT
+npm: call page (production),@radix-ui/react-use-rect,1.1.1,MIT
+npm: call page (production),@radix-ui/react-use-size,1.1.1,MIT
+npm: call page (production),@radix-ui/react-visually-hidden,1.2.3,MIT
+npm: call page (production),@radix-ui/rect,1.1.1,MIT
+npm: call page (production),@react-three/fiber,9.8.2,MIT
+npm: call page (production),@react-three/postprocessing,3.2.2,MIT
+npm: call page (production),@rive-app/react-webgl2,4.26.1,MIT
+npm: call page (production),@rive-app/webgl2,2.34.1,MIT
+npm: call page (production),@shadcn/react,0.2.1,MIT
+npm: call page (production),@shikijs/core,3.21.0,MIT
+npm: call page (production),@shikijs/engine-javascript,3.21.0,MIT
+npm: call page (production),@shikijs/engine-oniguruma,3.21.0,MIT
+npm: call page (production),@shikijs/langs,3.21.0,MIT
+npm: call page (production),@shikijs/themes,3.21.0,MIT
+npm: call page (production),@shikijs/types,3.21.0,MIT
+npm: call page (production),@shikijs/vscode-textmate,10.0.2,MIT
+npm: call page (production),@standard-schema/spec,1.0.0,MIT
+npm: call page (production),@swc/helpers,0.5.15,Apache-2.0
+npm: call page (production),@tokenlens/core,1.3.0,MIT
+npm: call page (production),@tokenlens/fetch,1.3.0,MIT
+npm: call page (production),@tokenlens/helpers,1.3.1,MIT
+npm: call page (production),@tokenlens/models,1.3.0,MIT
+npm: call page (production),@tweenjs/tween.js,23.1.3,MIT
+npm: call page (production),@types/d3-array,3.2.2,MIT
+npm: call page (production),@types/d3-axis,3.0.6,MIT
+npm: call page (production),@types/d3-brush,3.0.6,MIT
+npm: call page (production),@types/d3-chord,3.0.6,MIT
+npm: call page (production),@types/d3-color,3.1.3,MIT
+npm: call page (production),@types/d3-contour,3.0.6,MIT
+npm: call page (production),@types/d3-delaunay,6.0.4,MIT
+npm: call page (production),@types/d3-dispatch,3.0.7,MIT
+npm: call page (production),@types/d3-drag,3.0.7,MIT
+npm: call page (production),@types/d3-dsv,3.0.7,MIT
+npm: call page (production),@types/d3-ease,3.0.2,MIT
+npm: call page (production),@types/d3-fetch,3.0.7,MIT
+npm: call page (production),@types/d3-force,3.0.10,MIT
+npm: call page (production),@types/d3-format,3.0.4,MIT
+npm: call page (production),@types/d3-geo,3.1.0,MIT
+npm: call page (production),@types/d3-hierarchy,3.1.7,MIT
+npm: call page (production),@types/d3-interpolate,3.0.4,MIT
+npm: call page (production),@types/d3-path,3.1.1,MIT
+npm: call page (production),@types/d3-polygon,3.0.2,MIT
+npm: call page (production),@types/d3-quadtree,3.0.6,MIT
+npm: call page (production),@types/d3-random,3.0.3,MIT
+npm: call page (production),@types/d3-scale-chromatic,3.1.0,MIT
+npm: call page (production),@types/d3-scale,4.0.9,MIT
+npm: call page (production),@types/d3-selection,3.0.11,MIT
+npm: call page (production),@types/d3-shape,3.1.7,MIT
+npm: call page (production),@types/d3-time-format,4.0.3,MIT
+npm: call page (production),@types/d3-time,3.0.4,MIT
+npm: call page (production),@types/d3-timer,3.0.2,MIT
+npm: call page (production),@types/d3-transition,3.0.9,MIT
+npm: call page (production),@types/d3-zoom,3.0.8,MIT
+npm: call page (production),@types/d3,7.4.3,MIT
+npm: call page (production),@types/debug,4.1.12,MIT
+npm: call page (production),@types/dom-mediacapture-record,1.0.22,MIT
+npm: call page (production),@types/estree-jsx,1.0.5,MIT
+npm: call page (production),@types/estree,1.0.8,MIT
+npm: call page (production),@types/geojson,7946.0.16,MIT
+npm: call page (production),@types/hast,3.0.4,MIT
+npm: call page (production),@types/katex,0.16.7,MIT
+npm: call page (production),@types/mdast,4.0.4,MIT
+npm: call page (production),@types/ms,2.1.0,MIT
+npm: call page (production),@types/node,24.13.3,MIT
+npm: call page (production),@types/react-dom,19.1.9,MIT
+npm: call page (production),@types/react-reconciler,0.28.9,MIT
+npm: call page (production),@types/react,19.1.12,MIT
+npm: call page (production),@types/stats.js,0.17.4,MIT
+npm: call page (production),@types/three,0.186.0,MIT
+npm: call page (production),@types/trusted-types,2.0.7,MIT
+npm: call page (production),@types/unist,2.0.11,MIT
+npm: call page (production),@types/unist,3.0.3,MIT
+npm: call page (production),@types/webxr,0.5.24,MIT
+npm: call page (production),@ungap/structured-clone,1.3.0,ISC
+npm: call page (production),@upsetjs/venn.js,2.0.0,MIT
+npm: call page (production),@vercel/oidc,3.0.5,Apache-2.0
+npm: call page (production),@xyflow/react,12.10.0,MIT
+npm: call page (production),@xyflow/system,0.0.74,MIT
+npm: call page (production),acorn,8.15.0,MIT
+npm: call page (production),ai,5.0.105,Apache-2.0
+npm: call page (production),aria-hidden,1.2.6,MIT
+npm: call page (production),bail,2.0.2,MIT
+npm: call page (production),base64-js,1.5.1,MIT
+npm: call page (production),buffer-image-size,0.6.4,MIT
+npm: call page (production),buffer,6.0.3,MIT
+npm: call page (production),caniuse-lite,1.0.30001718,CC-BY-4.0
+npm: call page (production),ccount,2.0.1,MIT
+npm: call page (production),ce-la-react,0.3.2,BSD-3-Clause
+npm: call page (production),character-entities-html4,2.1.0,MIT
+npm: call page (production),character-entities-legacy,3.0.0,MIT
+npm: call page (production),character-entities,2.0.2,MIT
+npm: call page (production),character-reference-invalid,2.0.1,MIT
+npm: call page (production),class-variance-authority,0.7.1,Apache-2.0
+npm: call page (production),classcat,5.0.5,MIT
+npm: call page (production),client-only,0.0.1,MIT
+npm: call page (production),clsx,2.1.1,MIT
+npm: call page (production),cmdk,1.1.1,MIT
+npm: call page (production),color-convert,2.0.1,MIT
+npm: call page (production),color-name,1.1.4,MIT
+npm: call page (production),color-string,1.9.1,MIT
+npm: call page (production),color,4.2.3,MIT
+npm: call page (production),comma-separated-tokens,2.0.3,MIT
+npm: call page (production),commander,7.2.0,MIT
+npm: call page (production),commander,8.3.0,MIT
+npm: call page (production),confbox,0.1.8,MIT
+npm: call page (production),cose-base,1.0.3,MIT
+npm: call page (production),cose-base,2.2.0,MIT
+npm: call page (production),csstype,3.1.3,MIT
+npm: call page (production),cytoscape-cose-bilkent,4.1.0,MIT
+npm: call page (production),cytoscape-fcose,2.2.0,MIT
+npm: call page (production),cytoscape,3.33.1,MIT
+npm: call page (production),d3-array,2.12.1,BSD-3-Clause
+npm: call page (production),d3-array,3.2.4,ISC
+npm: call page (production),d3-axis,3.0.0,ISC
+npm: call page (production),d3-brush,3.0.0,ISC
+npm: call page (production),d3-chord,3.0.1,ISC
+npm: call page (production),d3-color,3.1.0,ISC
+npm: call page (production),d3-contour,4.0.2,ISC
+npm: call page (production),d3-delaunay,6.0.4,ISC
+npm: call page (production),d3-dispatch,3.0.1,ISC
+npm: call page (production),d3-drag,3.0.0,ISC
+npm: call page (production),d3-dsv,3.0.1,ISC
+npm: call page (production),d3-ease,3.0.1,BSD-3-Clause
+npm: call page (production),d3-fetch,3.0.1,ISC
+npm: call page (production),d3-force,3.0.0,ISC
+npm: call page (production),d3-format,3.1.0,ISC
+npm: call page (production),d3-geo,3.1.1,ISC
+npm: call page (production),d3-hierarchy,3.1.2,ISC
+npm: call page (production),d3-interpolate,3.0.1,ISC
+npm: call page (production),d3-path,1.0.9,BSD-3-Clause
+npm: call page (production),d3-path,3.1.0,ISC
+npm: call page (production),d3-polygon,3.0.1,ISC
+npm: call page (production),d3-quadtree,3.0.1,ISC
+npm: call page (production),d3-random,3.0.1,ISC
+npm: call page (production),d3-sankey,0.12.3,BSD-3-Clause
+npm: call page (production),d3-scale-chromatic,3.1.0,ISC
+npm: call page (production),d3-scale,4.0.2,ISC
+npm: call page (production),d3-selection,3.0.0,ISC
+npm: call page (production),d3-shape,1.3.7,BSD-3-Clause
+npm: call page (production),d3-shape,3.2.0,ISC
+npm: call page (production),d3-time-format,4.1.0,ISC
+npm: call page (production),d3-time,3.1.0,ISC
+npm: call page (production),d3-timer,3.0.1,ISC
+npm: call page (production),d3-transition,3.0.1,ISC
+npm: call page (production),d3-zoom,3.0.0,ISC
+npm: call page (production),d3,7.9.0,ISC
+npm: call page (production),dagre-d3-es,7.0.14,MIT
+npm: call page (production),dayjs,1.11.19,MIT
+npm: call page (production),debug,4.4.1,MIT
+npm: call page (production),decode-named-character-reference,1.2.0,MIT
+npm: call page (production),delaunator,5.0.1,ISC
+npm: call page (production),dequal,2.0.3,MIT
+npm: call page (production),detect-libc,2.1.2,Apache-2.0
+npm: call page (production),detect-node-es,1.1.0,MIT
+npm: call page (production),devlop,1.1.0,MIT
+npm: call page (production),dompurify,3.4.1,(MPL-2.0 OR Apache-2.0)
+npm: call page (production),embla-carousel-react,8.6.0,MIT
+npm: call page (production),embla-carousel-reactive-utils,8.6.0,MIT
+npm: call page (production),embla-carousel,8.6.0,MIT
+npm: call page (production),entities,6.0.1,BSD-2-Clause
+npm: call page (production),es-toolkit,1.46.1,MIT
+npm: call page (production),escape-string-regexp,5.0.0,MIT
+npm: call page (production),estree-util-is-identifier-name,3.0.0,MIT
+npm: call page (production),events,3.3.0,MIT
+npm: call page (production),eventsource-parser,3.0.6,MIT
+npm: call page (production),extend,3.0.2,MIT
+npm: call page (production),fflate,0.8.3,MIT
+npm: call page (production),framer-motion,12.16.0,MIT
+npm: call page (production),get-east-asian-width,1.4.0,MIT
+npm: call page (production),get-nonce,1.0.1,MIT
+npm: call page (production),hachure-fill,0.5.2,MIT
+npm: call page (production),hast-util-from-dom,5.0.1,ISC
+npm: call page (production),hast-util-from-html-isomorphic,2.0.0,MIT
+npm: call page (production),hast-util-from-html,2.0.3,MIT
+npm: call page (production),hast-util-from-parse5,8.0.3,MIT
+npm: call page (production),hast-util-is-element,3.0.0,MIT
+npm: call page (production),hast-util-parse-selector,4.0.0,MIT
+npm: call page (production),hast-util-raw,9.1.0,MIT
+npm: call page (production),hast-util-to-html,9.0.5,MIT
+npm: call page (production),hast-util-to-jsx-runtime,2.3.6,MIT
+npm: call page (production),hast-util-to-parse5,8.0.0,MIT
+npm: call page (production),hast-util-to-text,4.0.2,MIT
+npm: call page (production),hast-util-whitespace,3.0.0,MIT
+npm: call page (production),hast,1.0.0,MIT
+npm: call page (production),hastscript,9.0.1,MIT
+npm: call page (production),html-url-attributes,3.0.1,MIT
+npm: call page (production),html-void-elements,3.0.0,MIT
+npm: call page (production),iconv-lite,0.6.3,MIT
+npm: call page (production),ieee754,1.2.1,BSD-3-Clause
+npm: call page (production),inline-style-parser,0.2.7,MIT
+npm: call page (production),internmap,1.0.1,ISC
+npm: call page (production),internmap,2.0.3,ISC
+npm: call page (production),is-alphabetical,2.0.1,MIT
+npm: call page (production),is-alphanumerical,2.0.1,MIT
+npm: call page (production),is-arrayish,0.3.2,MIT
+npm: call page (production),is-decimal,2.0.1,MIT
+npm: call page (production),is-hexadecimal,2.0.1,MIT
+npm: call page (production),is-plain-obj,4.1.0,MIT
+npm: call page (production),its-fine,2.1.1,MIT
+npm: call page (production),jose,5.10.0,MIT
+npm: call page (production),jose,6.1.0,MIT
+npm: call page (production),json-schema,0.4.0,(AFL-2.1 OR BSD-3-Clause)
+npm: call page (production),katex,0.16.25,MIT
+npm: call page (production),khroma,2.1.0,not declared in package.json; its licence file is MIT
+npm: call page (production),layout-base,1.0.2,MIT
+npm: call page (production),layout-base,2.0.1,MIT
+npm: call page (production),livekit-client,2.22.2,Apache-2.0
+npm: call page (production),livekit-server-sdk,2.18.0,Apache-2.0
+npm: call page (production),lodash-es,4.18.1,MIT
+npm: call page (production),lodash.debounce,4.0.8,MIT
+npm: call page (production),loglevel,1.9.1,MIT
+npm: call page (production),loglevel,1.9.2,MIT
+npm: call page (production),longest-streak,3.1.0,MIT
+npm: call page (production),lucide-react,0.542.0,ISC
+npm: call page (production),lucide-react,0.555.0,ISC
+npm: call page (production),maath,0.10.8,MIT
+npm: call page (production),machina,7.0.1,MIT
+npm: call page (production),markdown-table,3.0.4,MIT
+npm: call page (production),marked,16.4.2,MIT
+npm: call page (production),mdast-util-find-and-replace,3.0.2,MIT
+npm: call page (production),mdast-util-from-markdown,2.0.2,MIT
+npm: call page (production),mdast-util-gfm-autolink-literal,2.0.1,MIT
+npm: call page (production),mdast-util-gfm-footnote,2.1.0,MIT
+npm: call page (production),mdast-util-gfm-strikethrough,2.0.0,MIT
+npm: call page (production),mdast-util-gfm-table,2.0.0,MIT
+npm: call page (production),mdast-util-gfm-task-list-item,2.0.0,MIT
+npm: call page (production),mdast-util-gfm,3.1.0,MIT
+npm: call page (production),mdast-util-math,3.0.0,MIT
+npm: call page (production),mdast-util-mdx-expression,2.0.1,MIT
+npm: call page (production),mdast-util-mdx-jsx,3.2.0,MIT
+npm: call page (production),mdast-util-mdxjs-esm,2.0.1,MIT
+npm: call page (production),mdast-util-phrasing,4.1.0,MIT
+npm: call page (production),mdast-util-to-hast,13.2.1,MIT
+npm: call page (production),mdast-util-to-markdown,2.1.2,MIT
+npm: call page (production),mdast-util-to-string,4.0.0,MIT
+npm: call page (production),media-chrome,4.17.2,MIT
+npm: call page (production),mermaid,11.15.0,MIT
+npm: call page (production),meshoptimizer,1.1.1,MIT
+npm: call page (production),micromark-core-commonmark,2.0.3,MIT
+npm: call page (production),micromark-extension-cjk-friendly-gfm-strikethrough,1.2.3,MIT
+npm: call page (production),micromark-extension-cjk-friendly-util,2.1.1,MIT
+npm: call page (production),micromark-extension-cjk-friendly,1.2.3,MIT
+npm: call page (production),micromark-extension-gfm-autolink-literal,2.1.0,MIT
+npm: call page (production),micromark-extension-gfm-footnote,2.1.0,MIT
+npm: call page (production),micromark-extension-gfm-strikethrough,2.1.0,MIT
+npm: call page (production),micromark-extension-gfm-table,2.1.1,MIT
+npm: call page (production),micromark-extension-gfm-tagfilter,2.0.0,MIT
+npm: call page (production),micromark-extension-gfm-task-list-item,2.1.0,MIT
+npm: call page (production),micromark-extension-gfm,3.0.0,MIT
+npm: call page (production),micromark-extension-math,3.1.0,MIT
+npm: call page (production),micromark-factory-destination,2.0.1,MIT
+npm: call page (production),micromark-factory-label,2.0.1,MIT
+npm: call page (production),micromark-factory-space,2.0.1,MIT
+npm: call page (production),micromark-factory-title,2.0.1,MIT
+npm: call page (production),micromark-factory-whitespace,2.0.1,MIT
+npm: call page (production),micromark-util-character,2.1.1,MIT
+npm: call page (production),micromark-util-chunked,2.0.1,MIT
+npm: call page (production),micromark-util-classify-character,2.0.1,MIT
+npm: call page (production),micromark-util-combine-extensions,2.0.1,MIT
+npm: call page (production),micromark-util-decode-numeric-character-reference,2.0.2,MIT
+npm: call page (production),micromark-util-decode-string,2.0.1,MIT
+npm: call page (production),micromark-util-encode,2.0.1,MIT
+npm: call page (production),micromark-util-html-tag-name,2.0.1,MIT
+npm: call page (production),micromark-util-normalize-identifier,2.0.1,MIT
+npm: call page (production),micromark-util-resolve-all,2.0.1,MIT
+npm: call page (production),micromark-util-sanitize-uri,2.0.1,MIT
+npm: call page (production),micromark-util-subtokenize,2.1.0,MIT
+npm: call page (production),micromark-util-symbol,2.0.1,MIT
+npm: call page (production),micromark-util-types,2.0.2,MIT
+npm: call page (production),micromark,4.0.2,MIT
+npm: call page (production),mime,4.0.7,MIT
+npm: call page (production),mlly,1.8.0,MIT
+npm: call page (production),motion-dom,12.16.0,MIT
+npm: call page (production),motion-utils,12.12.1,MIT
+npm: call page (production),motion,12.16.0,MIT
+npm: call page (production),ms,2.1.3,MIT
+npm: call page (production),n8ao,2.0.2,ISC
+npm: call page (production),nanoid,3.3.16,MIT
+npm: call page (production),nanoid,5.1.6,MIT
+npm: call page (production),next-themes,0.4.6,MIT
+npm: call page (production),next,15.5.27,MIT
+npm: call page (production),oniguruma-parser,0.12.1,MIT
+npm: call page (production),oniguruma-to-es,4.3.4,MIT
+npm: call page (production),package-manager-detector,1.6.0,MIT
+npm: call page (production),parse-entities,4.0.2,MIT
+npm: call page (production),parse5,7.3.0,MIT
+npm: call page (production),path-data-parser,0.1.0,MIT
+npm: call page (production),pathe,2.0.3,MIT
+npm: call page (production),picocolors,1.1.1,ISC
+npm: call page (production),pkg-types,1.3.1,MIT
+npm: call page (production),points-on-curve,0.2.0,MIT
+npm: call page (production),points-on-path,0.2.1,MIT
+npm: call page (production),postcss,8.4.31,MIT
+npm: call page (production),postprocessing,6.39.5,Zlib
+npm: call page (production),property-information,6.5.0,MIT
+npm: call page (production),property-information,7.1.0,MIT
+npm: call page (production),radix-ui,1.4.3,MIT
+npm: call page (production),react-dom,19.1.1,MIT
+npm: call page (production),react-remove-scroll-bar,2.3.8,MIT
+npm: call page (production),react-remove-scroll,2.7.1,MIT
+npm: call page (production),react-style-singleton,2.2.3,MIT
+npm: call page (production),react-use-measure,2.1.7,MIT
+npm: call page (production),react,19.1.1,MIT
+npm: call page (production),regex-recursion,6.0.2,MIT
+npm: call page (production),regex-utilities,2.3.0,MIT
+npm: call page (production),regex,6.0.1,MIT
+npm: call page (production),rehype-harden,1.1.6,MIT
+npm: call page (production),rehype-katex,7.0.1,MIT
+npm: call page (production),rehype-raw,7.0.0,MIT
+npm: call page (production),remark-cjk-friendly-gfm-strikethrough,1.2.3,MIT
+npm: call page (production),remark-cjk-friendly,1.2.3,MIT
+npm: call page (production),remark-gfm,4.0.1,MIT
+npm: call page (production),remark-math,6.0.0,MIT
+npm: call page (production),remark-parse,11.0.0,MIT
+npm: call page (production),remark-rehype,11.1.2,MIT
+npm: call page (production),remark-stringify,11.0.0,MIT
+npm: call page (production),robust-predicates,3.0.2,Unlicense
+npm: call page (production),roughjs,4.6.6,MIT
+npm: call page (production),rw,1.3.3,BSD-3-Clause
+npm: call page (production),rxjs,7.8.2,Apache-2.0
+npm: call page (production),safer-buffer,2.1.2,MIT
+npm: call page (production),scheduler,0.26.0,MIT
+npm: call page (production),scheduler,0.28.0,MIT
+npm: call page (production),sdp-transform,2.15.0,MIT
+npm: call page (production),sdp,3.2.2,MIT
+npm: call page (production),semver,7.7.2,ISC
+npm: call page (production),sharp,0.34.3,Apache-2.0
+npm: call page (production),shiki,3.21.0,MIT
+npm: call page (production),simple-swizzle,0.2.2,MIT
+npm: call page (production),sonner,2.0.7,MIT
+npm: call page (production),source-map-js,1.2.1,BSD-3-Clause
+npm: call page (production),space-separated-tokens,2.0.2,MIT
+npm: call page (production),streamdown,1.6.9,Apache-2.0
+npm: call page (production),stringify-entities,4.0.4,MIT
+npm: call page (production),style-to-js,1.1.21,MIT
+npm: call page (production),style-to-object,1.0.14,MIT
+npm: call page (production),styled-jsx,5.1.6,MIT
+npm: call page (production),stylis,4.3.6,MIT
+npm: call page (production),suspend-react,0.1.3,MIT
+npm: call page (production),tailwind-merge,3.3.1,MIT
+npm: call page (production),three,0.186.1,MIT
+npm: call page (production),tinyexec,1.0.2,MIT
+npm: call page (production),tokenlens,1.3.1,MIT
+npm: call page (production),trim-lines,3.0.1,MIT
+npm: call page (production),trough,2.2.0,MIT
+npm: call page (production),ts-dedent,2.2.0,MIT
+npm: call page (production),tslib,2.8.1,0BSD
+npm: call page (production),typed-emitter,2.1.0,MIT
+npm: call page (production),ufo,1.6.1,MIT
+npm: call page (production),undici-types,7.18.2,MIT
+npm: call page (production),unified,11.0.5,MIT
+npm: call page (production),unist-util-find-after,5.0.0,MIT
+npm: call page (production),unist-util-is,6.0.1,MIT
+npm: call page (production),unist-util-position,5.0.0,MIT
+npm: call page (production),unist-util-remove-position,5.0.0,MIT
+npm: call page (production),unist-util-stringify-position,4.0.0,MIT
+npm: call page (production),unist-util-visit-parents,6.0.2,MIT
+npm: call page (production),unist-util-visit,5.0.0,MIT
+npm: call page (production),use-callback-ref,1.3.3,MIT
+npm: call page (production),use-sidecar,1.1.3,MIT
+npm: call page (production),use-stick-to-bottom,1.1.1,MIT
+npm: call page (production),use-sync-external-store,1.6.0,MIT
+npm: call page (production),usehooks-ts,3.1.1,MIT
+npm: call page (production),uuid,14.0.0,MIT
+npm: call page (production),vfile-location,5.0.3,MIT
+npm: call page (production),vfile-message,4.0.3,MIT
+npm: call page (production),vfile,6.0.3,MIT
+npm: call page (production),web-namespaces,2.0.1,MIT
+npm: call page (production),webrtc-adapter,9.0.6,BSD-3-Clause
+npm: call page (production),zod,4.1.13,MIT
+npm: call page (production),zustand,4.5.7,MIT
+npm: call page (production),zustand,5.1.0,MIT
+npm: call page (production),zwitch,2.0.4,MIT
+python: xPerfect (runtime),aiofile,3.11.1,Apache-2.0
+python: xPerfect (runtime),annotated-doc,0.0.5,MIT
+python: xPerfect (runtime),annotated-types,0.8.0,MIT
+python: xPerfect (runtime),anthropic,1.14.0,MIT
+python: xPerfect (runtime),anyio,4.14.2,MIT
+python: xPerfect (runtime),attrs,26.1.0,MIT
+python: xPerfect (runtime),authlib,1.7.2,BSD-3-Clause
+python: xPerfect (runtime),backports-tarfile,1.2.0,not installed on a Mac (another platform)
+python: xPerfect (runtime),beartype,0.22.9,MIT License
+python: xPerfect (runtime),cachetools,7.1.6,MIT
+python: xPerfect (runtime),caio,0.9.25,not declared in its metadata; its licence file is Apache-2.0
+python: xPerfect (runtime),certifi,2026.7.22,MPL-2.0
+python: xPerfect (runtime),cffi,2.1.0,MIT-0
+python: xPerfect (runtime),charset-normalizer,3.5.2,MIT
+python: xPerfect (runtime),click,8.4.2,BSD-3-Clause
+python: xPerfect (runtime),colorama,0.4.6,BSD License
+python: xPerfect (runtime),croniter,6.2.4,MIT
+python: xPerfect (runtime),cryptography,50.0.0,Apache-2.0 OR BSD-3-Clause
+python: xPerfect (runtime),cyclopts,4.22.3,Apache-2.0
+python: xPerfect (runtime),dnspython,2.8.0,ISC
+python: xPerfect (runtime),docstring-parser,0.18.0,MIT
+python: xPerfect (runtime),email-validator,2.3.0,Unlicense
+python: xPerfect (runtime),et-xmlfile,2.0.0,MIT
+python: xPerfect (runtime),exceptiongroup,1.3.1,MIT License
+python: xPerfect (runtime),fastapi,0.141.1,MIT
+python: xPerfect (runtime),fastmcp,3.4.5,Apache-2.0
+python: xPerfect (runtime),fastmcp-slim,3.4.5,Apache-2.0
+python: xPerfect (runtime),genai-prices,0.1.12,MIT
+python: xPerfect (runtime),griffelib,2.1.0,ISC
+python: xPerfect (runtime),h11,0.16.0,MIT
+python: xPerfect (runtime),httpcore,1.0.9,BSD-3-Clause
+python: xPerfect (runtime),httpcore2,2.13.1,BSD-3-Clause
+python: xPerfect (runtime),httpx,0.28.1,BSD-3-Clause
+python: xPerfect (runtime),httpx-sse,0.4.3,MIT
+python: xPerfect (runtime),httpx2,2.13.1,BSD-3-Clause
+python: xPerfect (runtime),httpx2-jsfetch,1.0,not installed on a Mac (another platform)
+python: xPerfect (runtime),idna,3.18,BSD-3-Clause
+python: xPerfect (runtime),importlib-metadata,9.0.0,Apache-2.0 (licence of another cached version)
+python: xPerfect (runtime),iniconfig,2.3.0,MIT
+python: xPerfect (runtime),jaraco-classes,3.4.0,not installed on a Mac (another platform)
+python: xPerfect (runtime),jaraco-context,6.1.2,not installed on a Mac (another platform)
+python: xPerfect (runtime),jaraco-functools,4.6.0,not installed on a Mac (another platform)
+python: xPerfect (runtime),jeepney,0.9.0,not installed on a Mac (another platform)
+python: xPerfect (runtime),jiter,0.17.0,MIT
+python: xPerfect (runtime),joserfc,1.7.4,BSD-3-Clause
+python: xPerfect (runtime),jsonref,1.1.0,MIT
+python: xPerfect (runtime),jsonschema,4.26.0,MIT
+python: xPerfect (runtime),jsonschema-path,0.5.0,Apache-2.0
+python: xPerfect (runtime),jsonschema-specifications,2025.9.1,MIT
+python: xPerfect (runtime),keyring,25.7.0,MIT
+python: xPerfect (runtime),logfire-api,5.2.0,MIT
+python: xPerfect (runtime),lxml,6.1.1,BSD-3-Clause
+python: xPerfect (runtime),markdown-it-py,4.2.0,MIT License
+python: xPerfect (runtime),mcp,1.29.0,MIT
+python: xPerfect (runtime),mdurl,0.1.2,MIT License
+python: xPerfect (runtime),more-itertools,11.1.0,MIT
+python: xPerfect (runtime),openai,3.31.0,Apache-2.0
+python: xPerfect (runtime),openapi-pydantic,0.5.1,MIT
+python: xPerfect (runtime),openpyxl,3.1.5,MIT
+python: xPerfect (runtime),opentelemetry-api,1.44.0,Apache-2.0
+python: xPerfect (runtime),packaging,26.2,Apache-2.0 OR BSD-2-Clause
+python: xPerfect (runtime),pathable,0.6.0,Apache-2.0
+python: xPerfect (runtime),pillow,12.3.0,MIT-CMU
+python: xPerfect (runtime),platformdirs,4.11.0,MIT
+python: xPerfect (runtime),pluggy,1.6.0,MIT
+python: xPerfect (runtime),py-key-value-aio,0.4.5,Apache-2.0
+python: xPerfect (runtime),pycparser,3.0,BSD-3-Clause
+python: xPerfect (runtime),pydantic,2.13.4,MIT
+python: xPerfect (runtime),pydantic-ai-slim,2.56.0,MIT
+python: xPerfect (runtime),pydantic-core,2.46.4,MIT
+python: xPerfect (runtime),pydantic-graph,2.56.0,MIT
+python: xPerfect (runtime),pydantic-settings,2.14.2,MIT
+python: xPerfect (runtime),pygments,2.20.0,BSD-2-Clause
+python: xPerfect (runtime),pyjwt,2.13.0,MIT
+python: xPerfect (runtime),pyperclip,1.11.0,BSD
+python: xPerfect (runtime),pytest,9.1.1,MIT
+python: xPerfect (runtime),python-dateutil,2.9.0.post0,Dual License
+python: xPerfect (runtime),python-docx,1.2.0,MIT
+python: xPerfect (runtime),python-dotenv,1.2.2,BSD-3-Clause
+python: xPerfect (runtime),python-multipart,0.0.32,Apache-2.0
+python: xPerfect (runtime),python-pptx,1.0.2,MIT
+python: xPerfect (runtime),pywin32,312,not installed on a Mac (another platform)
+python: xPerfect (runtime),pywin32-ctypes,0.2.3,not installed on a Mac (another platform)
+python: xPerfect (runtime),pyyaml,6.0.3,MIT
+python: xPerfect (runtime),referencing,0.37.0,MIT
+python: xPerfect (runtime),regex,2026.9.29,Apache-2.0 AND CNRI-Python
+python: xPerfect (runtime),requests,2.34.2,Apache-2.0
+python: xPerfect (runtime),rfc3339-validator,0.1.4,MIT license
+python: xPerfect (runtime),rfc3986-validator,0.1.1,MIT license
+python: xPerfect (runtime),rich,15.0.0,MIT
+python: xPerfect (runtime),rich-rst,2.1.0,MIT
+python: xPerfect (runtime),rpds-py,2026.6.3,MIT
+python: xPerfect (runtime),secretstorage,3.5.0,not installed on a Mac (another platform)
+python: xPerfect (runtime),six,1.17.0,MIT
+python: xPerfect (runtime),sniffio,1.3.1,MIT OR Apache-2.0
+python: xPerfect (runtime),sse-starlette,3.4.6,BSD-3-Clause
+python: xPerfect (runtime),standardwebhooks,1.1.0,MIT
+python: xPerfect (runtime),starlette,1.3.1,BSD-3-Clause
+python: xPerfect (runtime),tiktoken,0.14.0,not declared in its metadata; its licence file is MIT
+python: xPerfect (runtime),truststore,0.10.5,MIT
+python: xPerfect (runtime),typing-extensions,4.16.0,PSF-2.0
+python: xPerfect (runtime),typing-inspection,0.4.2,MIT
+python: xPerfect (runtime),uncalled-for,0.3.2,MIT License
+python: xPerfect (runtime),urllib3,2.8.0,MIT
+python: xPerfect (runtime),uvicorn,0.52.0,BSD-3-Clause
+python: xPerfect (runtime),watchfiles,1.2.0,MIT
+python: xPerfect (runtime),websockets,16.1.1,BSD-3-Clause
+python: xPerfect (runtime),wsproto,1.3.2,MIT
+python: xPerfect (runtime),xlsxwriter,3.2.9,BSD-2-Clause
+python: xPerfect (runtime),zipp,4.1.0,MIT (licence of another cached version)
+python: xPerfect (its UI),annotated-doc,0.0.4,MIT
+python: xPerfect (its UI),annotated-types,0.7.0,MIT License
+python: xPerfect (its UI),anyio,4.14.2,MIT
+python: xPerfect (its UI),certifi,2026.10.19,MPL-2.0
+python: xPerfect (its UI),cffi,2.1.1,MIT-0
+python: xPerfect (its UI),click,8.4.2,BSD-3-Clause
+python: xPerfect (its UI),colorama,0.4.6,BSD License
+python: xPerfect (its UI),cryptography,50.0.0,Apache-2.0 OR BSD-3-Clause
+python: xPerfect (its UI),fastapi,0.139.0,MIT
+python: xPerfect (its UI),h11,0.16.0,MIT
+python: xPerfect (its UI),httpcore,1.0.9,BSD-3-Clause
+python: xPerfect (its UI),httpx,0.28.1,BSD-3-Clause
+python: xPerfect (its UI),idna,3.18,BSD-3-Clause
+python: xPerfect (its UI),iniconfig,2.3.0,MIT
+python: xPerfect (its UI),packaging,26.2,Apache-2.0 OR BSD-2-Clause
+python: xPerfect (its UI),pluggy,1.6.0,MIT
+python: xPerfect (its UI),pycparser,3.0,BSD-3-Clause
+python: xPerfect (its UI),pydantic,2.13.4,MIT
+python: xPerfect (its UI),pydantic-core,2.46.4,MIT
+python: xPerfect (its UI),pygments,2.20.0,BSD-2-Clause
+python: xPerfect (its UI),pyjwt,2.15.1,MIT
+python: xPerfect (its UI),pytest,9.1.1,MIT
+python: xPerfect (its UI),starlette,1.3.1,BSD-3-Clause
+python: xPerfect (its UI),typing-extensions,4.16.0,PSF-2.0
+python: xPerfect (its UI),typing-inspection,0.4.2,MIT
+python: xPerfect (its UI),uvicorn,0.51.0,BSD-3-Clause
+python: xPerfect (its UI),websockets,16.1,BSD-3-Clause
+program: Homebrew,livekit-server,1.13.3,Apache-2.0
+program: Homebrew,whisper.cpp,1.9.5,MIT
+program: Homebrew,ffmpeg,9.0.1,GPL-3.0-or-later (Homebrew build)
+program: Homebrew,poppler (pdftotext),26.07.0,GPL-2.0-only OR GPL-3.0-only
+program: Homebrew,ripgrep,15.2.0,Unlicense
+program: Homebrew,git,2.55.0,GPL-2.0-only AND GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND MIT
+program: Homebrew,uv,0.11.28,Apache-2.0 OR MIT
+program: Homebrew,pnpm,11.22.0,MIT
+"program: Ollama (official release, Light's own copy)",ollama,0.40.15,MIT (official versioned source). Bundled parts have separate notices.
+model,qwen3.6:latest (Ollama),manifest a7eb95c53bcf,Apache-2.0 (the licence layer of its Ollama manifest)
+model,qwen3:1.7b (Ollama),1.7b,Apache-2.0 (Ollama licence layer)
+model,qwen3-embedding:0.6b (Ollama),manifest ac6da0dfba84,Apache-2.0 (Qwen model card)
+model,ggml-large-v3-turbo (whisper.cpp),main branch file,MIT (OpenAI and conversion model cards)
+model,ggml-silero-v5.1.2 (whisper.cpp VAD),main branch file,MIT (conversion model card)
+model,livekit/turn-detector,"v1.2.2-en, v0.4.1-intl",LiveKit Model License (use only with LiveKit Agents)
+model,mlx-community/chatterbox-turbo-8bit,2f2e21a,Apache-2.0 (its model card)
+model,mlx-community/S3TokenizerV2,e0c9886,Base CosyVoice2-0.5B is Apache-2.0. The conversion has no licence field.
+model,mflux-community/z-image-turbo-mflux-q8,4ccff28,"Apache-2.0 (its model card, inherited from Tongyi-MAI/Z-Image-Turbo)"
+model,mflux-community/qwen-image-2-1-mflux-q8,f5c8cc7 (not installed),Qwen Research License (research and evaluation only without commercial licence)
+model,unsloth/MiniMax-H3-GGUF,babc040 (not installed),"MiniMax H3 Community License (territory, attribution and commercial terms)"
+model,MIT/ast-finetuned-audioset-10-10-0.4593,f826b80,BSD-3-Clause (test download excluded from the release)
+vendored: xPerfect (brain/xperfect),xPerfect,07dac78 + brain/patches 0001 0002 0004-0007,Apache-2.0
+vendored: call page,agent-starter-react (LiveKit),9e1fc2f,MIT
+vendored: font,Inter Tight,variable,SIL OFL 1.1 (licence file beside it)
+vendored: font,Public Sans,variable,SIL OFL 1.1 (licence file beside it)
+vendored: font,Commit Mono,otf,SIL OFL 1.1 (font licence beside the assets)
+copied: main Viventium,Feelings kernel and prompts; character prompts; Life template; viventium-media,the owner's project,main Viventium's licence (not read here)

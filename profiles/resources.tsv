@@ -1,0 +1,7 @@
+# profile memory_GiB setup_GiB model_GiB
+small-8 8 8 0
+small-16 16 11 2
+small-24 24 12 2
+local 32 12 22
+hybrid 32 12 22
+cloud 32 12 22

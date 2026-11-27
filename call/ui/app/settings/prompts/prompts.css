@@ -1,0 +1,44 @@
+/* Prompts (settings/prompts.py): each text Viventium is given, by category, and the one in force. Only the page's own
+   tokens: graphite text on the glass, no outlines; a saved text that cannot be used says so in its own place. */
+.vsp-cat {
+  margin: -2px 0 18px;
+}
+.vsp-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.vsp-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.vsp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.vsp-head .vs-h3 {
+  font-size: 16px;
+}
+.vsp-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 8px 0 2px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--inner);
+  font-size: 13.5px;
+  color: var(--soft);
+}
+.vsp-aside > strong {
+  font-weight: 620;
+  color: var(--low);
+}
+.vsp-code {
+  margin: 6px 4px 40px;
+  text-align: center;
+}

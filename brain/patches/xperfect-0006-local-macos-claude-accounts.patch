@@ -1,0 +1,95 @@
+diff --git a/runtime_phase1/src/workers_projects_runtime/provider_accounts.py b/runtime_phase1/src/workers_projects_runtime/provider_accounts.py
+index 106404f..5853185 100644
+--- a/runtime_phase1/src/workers_projects_runtime/provider_accounts.py
++++ b/runtime_phase1/src/workers_projects_runtime/provider_accounts.py
+@@ -208,6 +208,21 @@ def provider_setup_binary(provider: str) -> str | None:
+     return shutil.which(executable)
+ 
+ 
++def _local_macos_claude_accounts() -> bool:
++    """Named Claude subscription accounts on this Mac: only on the explicit single-user local host, and only when
++    its owner switched them on (GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS). Claude Code keeps one Keychain
++    login per CLAUDE_CONFIG_DIR ("Claude Code-credentials-<hash>"), so each account home signs in on its own; the
++    owner's own sign-in is not read, copied or changed. Hosted, contained or multi-user deployments are unchanged."""
++    return (
++        _env_enabled("GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS")
++        and str(os.environ.get("GLASSHIVE_SECURITY_MODE") or "").strip().lower() == "local"
++        and str(os.environ.get("GLASSHIVE_AUTH_MODE") or "").strip().lower() == "local"
++        and str(os.environ.get("WPR_DEFAULT_EXECUTION_MODE") or "").strip().lower() == "host"
++        and str(os.environ.get("GLASSHIVE_PROVIDER_ACCOUNT_ISOLATION") or "").strip().lower() != "per_worker_container"
++        and not any(_env_enabled(name) for name in ("GLASSHIVE_ENABLE_HOSTED_MODE", "GLASSHIVE_ENTERPRISE_MODE", "WPR_ENTERPRISE_MODE"))
++    )
++
++
+ def provider_platform_support(
+     *,
+     provider: str,
+@@ -251,6 +266,8 @@ def provider_platform_support(
+         if isolation_mode != "per_worker_container":
+             return "isolated_substrate_required"
+     if normalized_provider in {"claude", "anthropic"}:
++        if current_platform == "darwin" and _local_macos_claude_accounts():
++            return "supported" if provider_setup_binary(normalized_provider) else "setup_cli_required"
+         if current_platform == "darwin":
+             return "unsupported_macos_host"
+         if not _env_enabled("GLASSHIVE_ENABLE_HOSTED_CLAUDE_CONSUMER_AUTH"):
+@@ -708,6 +725,8 @@ class ProviderAccountHomeManager:
+     ) -> None:
+         normalized_provider = str(provider).strip().lower()
+         if normalized_provider in {"claude", "anthropic"} and auth_method == "subscription":
++            if execution_mode == "host" and platform_name == "darwin" and _local_macos_claude_accounts():
++                return
+             if execution_mode == "host" and platform_name == "darwin":
+                 raise ControlPlaneError(
+                     "macOS host-native Claude supports only the current OS user's account; use an approved enterprise route"
+diff --git a/runtime_phase1/tests/test_control_plane.py b/runtime_phase1/tests/test_control_plane.py
+index 9be4c91..37a3284 100644
+--- a/runtime_phase1/tests/test_control_plane.py
++++ b/runtime_phase1/tests/test_control_plane.py
+@@ -1841,3 +1841,46 @@ def test_workspace_capability_revoke_restores_prior_bundle_and_preserves_later_c
+         assert json.loads(conn.execute(
+             "SELECT bootstrap_bundle_json FROM workers WHERE worker_id = 'wrk_public_safe'"
+         ).fetchone()[0]) == {"user_change": True}
++
++
++def test_local_macos_claude_accounts_are_explicit_and_single_user(monkeypatch):
++    """A named Claude subscription account on a Mac: refused as before, unless this is the single-user local host
++    and its owner switched GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS on; then it is a route like any other, at
++    setup and when a Worker starts on it. Never on a hosted, contained or multi-user deployment."""
++    from workers_projects_runtime import provider_accounts as pa
++
++    local = {"GLASSHIVE_SECURITY_MODE": "local", "GLASSHIVE_AUTH_MODE": "local", "WPR_DEFAULT_EXECUTION_MODE": "host"}
++    for name in ("GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS", "GLASSHIVE_PROVIDER_ACCOUNT_ISOLATION",
++                 "GLASSHIVE_ENABLE_HOSTED_MODE", "GLASSHIVE_ENTERPRISE_MODE", "WPR_ENTERPRISE_MODE"):
++        monkeypatch.delenv(name, raising=False)
++    for key, value in local.items():
++        monkeypatch.setenv(key, value)
++    monkeypatch.setattr(pa, "provider_setup_binary", lambda provider: "/usr/local/bin/claude")
++    homes = pa.ProviderAccountHomeManager.__new__(pa.ProviderAccountHomeManager)
++
++    def support() -> str:
++        return pa.provider_platform_support(provider="claude", auth_method="subscription", platform_name="darwin")
++
++    def route_ok() -> bool:
++        try:
++            homes.require_supported_route(provider="claude", auth_method="subscription", execution_mode="host",
++                                          platform_name="darwin", hosted_consumer_auth_enabled=False)
++            return True
++        except pa.ControlPlaneError:
++            return False
++
++    assert support() == "unsupported_macos_host" and not route_ok()
++    monkeypatch.setenv("GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS", "1")
++    assert support() == "supported" and route_ok()
++    monkeypatch.setenv("GLASSHIVE_SECURITY_MODE", "multi_user")
++    assert support() != "supported" and not route_ok()
++    monkeypatch.setenv("GLASSHIVE_SECURITY_MODE", "local")
++    monkeypatch.setenv("GLASSHIVE_PROVIDER_ACCOUNT_ISOLATION", "per_worker_container")
++    assert support() == "unsupported_macos_host" and not route_ok()
++    monkeypatch.delenv("GLASSHIVE_PROVIDER_ACCOUNT_ISOLATION")
++    monkeypatch.setenv("WPR_DEFAULT_EXECUTION_MODE", "docker")
++    assert support() == "unsupported_macos_host"
++    monkeypatch.setenv("WPR_DEFAULT_EXECUTION_MODE", "host")
++    # Linux and the other providers are as they were.
++    assert pa.provider_platform_support(provider="claude", auth_method="subscription", platform_name="linux") == "provider_permission_required"
++

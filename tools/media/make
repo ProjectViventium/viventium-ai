@@ -1,0 +1,6 @@
+#!/bin/bash
+# Make a picture or a short video with a model on this Mac (make.py says how). Its own Python and packages.
+here="$(cd "$(dirname "$0")" && pwd)"
+python="${VX_MEDIA_HOME:-$here}/.venv/bin/python"
+[ -x "$python" ] || { echo "No photo or video model is installed yet. It is one click in Settings, under Photos and videos." >&2; exit 1; }
+exec "$python" "$here/make.py" "$@"

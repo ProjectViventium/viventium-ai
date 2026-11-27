@@ -1,0 +1,785 @@
+diff --git a/docs/02_Architecture_and_Components.md b/docs/02_Architecture_and_Components.md
+index f80d749..447de7b 100644
+--- a/docs/02_Architecture_and_Components.md
++++ b/docs/02_Architecture_and_Components.md
+@@ -611,8 +611,9 @@ leave Grok, the editor clears unused full access; API validation rejects a full
+ declared Grok primary or fallback route. Retained unused or disallowed full settings stay visible
+ until cleared, so no hidden permission can return after a later route change. Changing the setting
+ affects new work; it does not approve an existing offer.
+-A standalone local xPerfect has no Core to inject that authority. There the local owner may mint a grant
+-for one existing open host mission Worker of the `grok-build` profile with
++Standalone local grants are held. The production service creates no signing key, refuses mints and ignores
++stored grant rows. A test-injected gate retains the ability to mint a grant for one existing open host mission
++Worker of the `grok-build` profile with
+ `POST /v1/workers/{id}/worker-access-grant {expires_at, deny_rules, proof}`. The proof is an HMAC over that
+ Worker's ID, the expiry and the deny list, made with `data/worker-access-grant.key`: an owner-only file in this
+ instance's private state, never an environment variable, `config.json` value or bearer token. The Worker's own
+diff --git a/docs/03_Bootstrap_Auth_and_Identity_Projection.md b/docs/03_Bootstrap_Auth_and_Identity_Projection.md
+index ed94589..1a01b08 100644
+--- a/docs/03_Bootstrap_Auth_and_Identity_Projection.md
++++ b/docs/03_Bootstrap_Auth_and_Identity_Projection.md
+@@ -702,8 +702,12 @@ The worker's private `config.toml` can declare Grok Build's `auth_provider_comma
+ or `[grok_com_config]`. With no bound credential path or explicit key, the adapter selects the
+ external provider before looking for a cached account. Grok must advertise the external provider
+ on its ACP sign-in method. The adapter runs it headlessly, blocks the native credential cache,
+-and reports a failed or timed-out sign-in as `provider_auth_missing`. The program supplying
+-credentials owns how it obtains and renews them.
++and distinguishes an authentication refusal from a timeout. Initial authentication has a 305-second
++ACP deadline, including the external provider's 300-second window. The program supplying credentials
++owns renewal. A managed attended provider uses an exact, live host mission lease and a dedicated
++native process. The host verifies the managed executable and issues credentials in memory. Saved
++managed homes require current authority on each start. Host grant creation and admission are disabled
++by default.
+
+ Optional `grok_mcp_servers` contains native ACP server objects. The bridge checks advertised HTTP/SSE
+ support; the selected worker's tool authority still owns which servers may be projected. Claude and
+diff --git a/runtime_phase1/src/workers_projects_runtime/api.py b/runtime_phase1/src/workers_projects_runtime/api.py
+index de888e1..9951d9d 100644
+--- a/runtime_phase1/src/workers_projects_runtime/api.py
++++ b/runtime_phase1/src/workers_projects_runtime/api.py
+@@ -359,6 +359,8 @@ def create_app(
+     runtime_backend: str | None = None,
+     runtime: WorkerRuntime | None = None,
+     reconcile_on_startup: bool | None = None,
++    *,
++    worker_access_grants_enabled: bool = False,
+ ) -> FastAPI:
+     load_viventium_runtime_env()
+     resolved_db_path = db_path or os.environ.get("WPR_DB_PATH", str(DEFAULT_DB_PATH))
+@@ -376,6 +378,7 @@ def create_app(
+         reconcile_on_startup=reconcile_on_startup,
+         control_plane_store=control_plane,
+         start_background_consumers=False,
++        worker_access_grants_enabled=worker_access_grants_enabled,
+     )
+     allowed_ai = AllowedAiPolicyService(
+         store,
+@@ -401,7 +404,7 @@ def create_app(
+
+     peer_mcp = native_peer_server(service.peers)
+     from .service import standalone_coordinator_host_enabled as _standalone_host
+-    if _standalone_host():  # (the local owner's private grant key: patch 0008, owner_worker_access)
++    if service.worker_access_grants_enabled and _standalone_host():
+         from .owner_worker_access import ensure_grant_key
+         ensure_grant_key(data_root)
+
+diff --git a/runtime_phase1/src/workers_projects_runtime/failure_classification.py b/runtime_phase1/src/workers_projects_runtime/failure_classification.py
+index 6946e26..c36e297 100644
+--- a/runtime_phase1/src/workers_projects_runtime/failure_classification.py
++++ b/runtime_phase1/src/workers_projects_runtime/failure_classification.py
+@@ -274,6 +274,9 @@ def _failure_record_text(value: Any, *, key: str = "") -> list[str]:
+ # The user text is fixed here; runner or provider prose never becomes the message.
+ GROK_NATIVE_INPUT_STOPS = {
+     "provider_auth_missing": "Grok sign-in is unavailable. Sign in to the configured Grok account and try again.",
++    "provider_auth_timeout": "Grok authentication did not answer in time. Try the job again.",
++    "provider_auth_refreshing": "Grok sign-in is refreshing. Try again shortly.",
++    "provider_auth_disabled": "Grok access is off for the configured account.",
+     "native_mcp_unavailable": "The configured tool connection was not ready before the model turn.",
+     "native_input_unanswered": "Grok ended before an owner response was recorded.",
+     "native_input_expired": "Grok stopped because its request for your response expired without an answer.",
+@@ -804,6 +807,11 @@ def classify_runtime_error(
+
+     structured_provider_class = str(getattr(exc, "failure_class", "") or "")
+     structured_provider_failures = {
++        "provider_auth_disabled": (
++            False,
++            GROK_NATIVE_INPUT_STOPS["provider_auth_disabled"],
++            "Turn Grok on in Settings before continuing the job.",
++        ),
+         "provider_unavailable": (
+             True,
+             "The configured model provider is temporarily unavailable.",
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_acp.py b/runtime_phase1/src/workers_projects_runtime/grok_acp.py
+index 5e4fc0b..78f49d7 100644
+--- a/runtime_phase1/src/workers_projects_runtime/grok_acp.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_acp.py
+@@ -28,16 +28,22 @@ class AcpError(RuntimeError):
+         self.stop_reason = stop_reason
+
+
++class AcpTimeout(AcpError):
++    pass
++
++
+ # Grok keeps a usable external credential in memory when its cache is unwritable.
+ # A child of the null device can never be a file. Do not point Grok at the device itself.
+ EXTERNAL_AUTH_MEMORY_PATH = '/dev/null/auth.json'
+-EXTERNAL_AUTH_TIMEOUT = 8.0
++EXTERNAL_AUTH_TIMEOUT = 305.0  # xAI allows the initial provider 300 s, plus transport.
+ EXTERNAL_AUTH_MESSAGE = 'Grok sign-in is unavailable. Sign in to the configured Grok account and try again.'
+
+
+ class ExternalAuthError(AcpError):
+-    def __init__(self, code=None):
+-        super().__init__(EXTERNAL_AUTH_MESSAGE, code=code if type(code) is int else None)
++    def __init__(self, code=None, *, timed_out=False):
++        self.timed_out = timed_out
++        message = 'Grok authentication did not answer in time. Try the job again.' if timed_out else EXTERNAL_AUTH_MESSAGE
++        super().__init__(message, code=code if type(code) is int else None)
+
+
+ def validated_session_model(event: dict, requested: str) -> str | None:
+@@ -119,7 +125,7 @@ class AcpClient:
+             return result
+         except TimeoutError as exc:
+             outcome = 'timeout'
+-            raise AcpError(f'Grok ACP {method} timed out') from exc
++            raise AcpTimeout(f'Grok ACP {method} timed out') from exc
+         finally:
+             with self._lock:
+                 self._pending.pop(request_id, None)
+@@ -608,7 +614,7 @@ class GrokSession:
+                 self.client.request('authenticate', {'methodId':'grok.com', '_meta':{'headless':True}},
+                                     timeout=EXTERNAL_AUTH_TIMEOUT)
+             except AcpError as exc:
+-                raise ExternalAuthError(exc.code) from None
++                raise ExternalAuthError(exc.code, timed_out=isinstance(exc, AcpTimeout)) from None
+         else:
+             auth_method = auth_method or self.initialization.get('_meta', {}).get('defaultAuthMethodId')
+             if auth_method not in ('xai.api_key', 'cached_token') or not any(
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py b/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py
+index 1d1c487..386beee 100644
+--- a/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_acp_runner.py
+@@ -7,16 +7,22 @@ stdin and never enter argv. This module does not own scheduling or run leases.
+ from __future__ import annotations
+
+ import argparse
++from contextlib import ExitStack
+ import hashlib
+ import shutil
+ import fcntl
+ import json
+ import math
+ import os
++import pwd
++import runpy
+ from pathlib import Path
+ import signal
+ import stat
++import socket
++import struct
+ import subprocess
++import tempfile
+ import sys
+ import time
+ import tomllib
+@@ -38,6 +44,7 @@ except ImportError:  # Private, materialized standalone runtime copy.
+ def main(argv=None):
+     parser = argparse.ArgumentParser()
+     parser.add_argument('--binary', required=True)
++    parser.add_argument('--managed-binary-sha256')
+     parser.add_argument('--native-warm-lease')
+     parser.add_argument('--model', required=True)
+     parser.add_argument('--session-id')
+@@ -119,7 +126,7 @@ def _owner_ceiling_problem(ceiling):
+ def _stopped_turn(exc, session, mailbox):
+     # A cancelled turn is explained from typed state, never from Grok's text.
+     if isinstance(exc, ExternalAuthError):
+-        return 'provider_auth_missing', str(exc)
++        return ('provider_auth_timeout' if exc.timed_out else 'provider_auth_missing'), str(exc)
+     if exc.stop_reason == 'mcp_unavailable':
+         return 'native_mcp_unavailable', 'Configured Grok MCP tools did not become ready before prompting.'
+     if exc.stop_reason != 'cancelled':
+@@ -144,6 +151,63 @@ def _stopped_turn(exc, session, mailbox):
+     return None, str(exc)
+
+
++def _peer_pid(sock):
++    if sys.platform == 'darwin':
++        # Darwin SOL_LOCAL / LOCAL_PEERPID. Linux supplies pid, uid, gid.
++        return struct.unpack('i', sock.getsockopt(0, 2, 4))[0]
++    return struct.unpack('3i', sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
++
++
++def _parent_pid(pid):
++    return int(subprocess.check_output(['/bin/ps', '-o', 'ppid=', '-p', str(pid)],
++                                       stderr=subprocess.DEVNULL, timeout=0.5))
++
++
++PROVIDER_STOPS = {
++    b'O': ('provider_auth_disabled', 'Grok access is off for the configured account.'),
++    b'R': ('provider_auth_refreshing', 'Grok sign-in is refreshing. Try again shortly.'),
++    b'S': ('provider_auth_missing', 'Sign in to the configured Grok account.'),
++}
++
++
++def _provider_source(env):
++    source = Path(env.pop('WPR_GROK_AUTH_ISSUER_FILE'))
++    off = Path(env.pop('WPR_GROK_AUTH_OFF_PATH'))
++    cached = env.pop('WPR_GROK_AUTH_CACHED_ONLY', '')
++    # Only the trusted runner reads the app's account. The child gets its
++    # original private HOME and sees only the socket path.
++    os.environ['HOME'] = pwd.getpwuid(os.getuid()).pw_dir
++    sys.dont_write_bytecode = True
++    sys.path.insert(0, str(source.parent.parent))
++    try:
++        issue = runpy.run_path(str(source))['credential']
++    finally:
++        sys.path.pop(0)
++    return lambda background: issue(off, cached_for=max(5, int(cached or 5))
++                                    if (cached or background) else None)
++
++
++def _serve_provider_gate(listener, process, issue, status):
++    # The kernel identifies the peer. Require a child of this exact Grok
++    # process. A caller with the socket path alone cannot obtain access.
++    while process.poll() is None and listener.fileno() >= 0:
++        try:
++            peer, _ = listener.accept()
++            with peer:
++                peer.settimeout(0.5)
++                if process.poll() is not None or _parent_pid(_peer_pid(peer)) != process.pid:
++                    continue
++                request = peer.recv(1)
++                if request not in (b'I', b'B'):
++                    continue
++                result, payload = issue(request == b'B')
++                status[:] = [result]
++                if result == b'K' and process.poll() is None:
++                    peer.sendall(payload)
++        except (OSError, ValueError, subprocess.SubprocessError):
++            continue
++
++
+ def run(args):
+     output_lock = Lock()
+     started_at = time.monotonic()
+@@ -202,6 +266,18 @@ def run(args):
+     emit({'type': 'grok.native_control.capability', 'action': 'interject',
+           'enabled': reviewed_interject, 'reason': interject_reason})
+     emit({'type':'grok.runtime.phase','phase':'runner_started'})
++    attended = os.environ.get('WPR_GROK_ATTENDED') == '1'
++    if attended:
++        try:
++            with Path(args.binary).open('rb') as binary:
++                verified = hashlib.file_digest(binary, 'sha256').hexdigest() == args.managed_binary_sha256
++        except OSError:
++            verified = False
++        if not (verified and external_auth and args.control_dir and args.run_id
++                and args.attempt_id and args.yolo_mode == 'false' and os.getpgrp() == os.getpid()):
++            emit({'type':'grok.error','failure_class':'provider_auth_missing',
++                  'message':'The verified attended Grok Worker could not start.'})
++            return 2
+     ceiling_file = getattr(args, 'owner_ceiling_file', None)
+     owner_grant = getattr(args, 'stop_at_permission_deadline', False)
+     deadline_at = getattr(args, 'permission_deadline_at', None)
+@@ -245,9 +321,10 @@ def run(args):
+         # Keep the deadline through authentication, session setup, prompting, and process teardown.
+         # The supervisor is outside this group and retains its normal exit and descendant checks.
+         Thread(target=end_at_deadline, daemon=True, name='grok-grant-expiry').start()
++    stack = ExitStack()
+     try:
+         warm_path = getattr(args, 'native_warm_lease', None)
+-        if ceiling is not None and warm_path:
++        if (ceiling is not None or attended) and warm_path:
+             # A warm process read its config before these rules were checked: never attached for a grant.
+             emit({'type': 'grok.runtime.phase', 'phase': 'warm_attach_unavailable',
+                   'fallback': 'same_model_stdio', 'reason': 'owner_ceiling'})
+@@ -290,18 +367,41 @@ def run(args):
+                 # The exact lease remains owned by the parent Stop/finalizer.
+                 emit({'type': 'grok.runtime.phase', 'phase': 'warm_attach_unavailable',
+                       'fallback': 'same_model_stdio'})
++        provider_status = []
+         if client is None:
++            env = dict(os.environ)
++            if attended:
++                issue = _provider_source(env)
++                result = issue(False)[0]  # refresh before launching; the bearer stays in memory
++                if result != b'K':
++                    failure, message = PROVIDER_STOPS[result]
++                    emit({'type': 'grok.error', 'failure_class': failure, 'message': message})
++                    return 2
++                # Use a short path for Darwin's sockaddr_un. Only this launch owns the listener.
++                provider_dir = tempfile.TemporaryDirectory(prefix='grok-auth-', dir='/tmp')
++                provider_gate = socket.socket(socket.AF_UNIX)
++                stack.callback(provider_dir.cleanup)
++                stack.callback(provider_gate.close)
++                env['WPR_GROK_AUTH_SOCKET'] = str(Path(provider_dir.name) / 'gate')
++                provider_gate.bind(env['WPR_GROK_AUTH_SOCKET'])
++                provider_gate.listen(4)
++                provider_gate.settimeout(0.5)
+             process = subprocess.Popen([args.binary, 'agent', '--no-leader', '--model', args.model, 'stdio'],
+-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr,
++                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE,
++                                       stderr=subprocess.DEVNULL if attended else sys.stderr, env=env,
+                                        **({'cwd': child_cwd} if restricted else {}))
++            if attended:
++                Thread(target=_serve_provider_gate, args=(provider_gate, process, issue, provider_status),
++                       daemon=True, name='grok-provider-gate').start()
+             emit({'type':'grok.runtime.phase','phase':'process_started'})
+             client = AcpClient(process, request_timing=timing)
+-    except (OSError, ValueError, AcpError):
++    except (OSError, ValueError, KeyError, ImportError, AcpError):
++        stack.close()
+         emit({'type':'grok.error','failure_class':'runtime_dependency_missing',
+               'message':'The configured Grok native transport could not start'})
+         print('The configured Grok native transport could not start', file=sys.stderr)
+         return 2
+-    with client as client:
++    with stack, client as client:
+         session = GrokSession(client, event=emit, reviewed_interject=reviewed_interject)
+         mailbox = None
+         old_handlers = {}
+@@ -350,7 +450,7 @@ def run(args):
+                                          input_window=getattr(args, 'input_window_seconds', None),
+                                          refuse_permissions=getattr(args, 'refuse_permission_requests', False),
+                                          on_permission_expired=approval_expired if external_auth and not owner_grant
+-                                         and os.environ.get('WPR_GROK_ATTENDED') == '1' else None)
++                                         and attended else None)
+                 if not restricted:
+                     client.permission = mailbox.permission
+                     client.interaction = mailbox.interaction
+@@ -392,6 +492,8 @@ def run(args):
+             return 0
+         except AcpError as exc:
+             failure_class, message = _stopped_turn(exc, session, mailbox)
++            if isinstance(exc, ExternalAuthError) and provider_status:
++                failure_class, message = PROVIDER_STOPS.get(provider_status[-1], (failure_class, message))
+             emit({'type':'grok.error','session_id':session.session_id,'code':exc.code,
+                   **({'failure_class':failure_class} if failure_class else {}), 'message':message})
+             print(message, file=sys.stderr)
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_native_warm.py b/runtime_phase1/src/workers_projects_runtime/grok_native_warm.py
+index 041d2fb..68e941d 100644
+--- a/runtime_phase1/src/workers_projects_runtime/grok_native_warm.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_native_warm.py
+@@ -27,7 +27,8 @@ class GrokNativeWarmMixin:
+         return self.runtime_root / 'native-warm'
+
+     def _native_warm_supported(self, worker):
+-        return worker.get("profile") == "grok-build" and worker.get("execution_mode") == "host"
++        return (worker.get("profile") == "grok-build" and worker.get("execution_mode") == "host"
++                and bootstrap_bundle_for(worker).get("attended_external_auth") is not True)
+
+     def _start_native_warm_server(self, worker, scope, environment, binary):
+         return start_grok_server(binary=binary, model=scope.model,
+@@ -35,7 +36,7 @@ class GrokNativeWarmMixin:
+             state_directory=self._warm_directory(), scope=scope, stop_runtime=self)
+
+     def _warm_context(self, worker):
+-        if (worker.get('profile') != 'grok-build' or worker.get('execution_mode') != 'host'
++        if (not self._native_warm_supported(worker)
+                 or worker.get('_glasshive_provider_account_bound')
+                 or worker.get('_glasshive_inference_broker_bound')
+                 or not native_current_account_allowed(worker)):
+diff --git a/runtime_phase1/src/workers_projects_runtime/grok_runtime.py b/runtime_phase1/src/workers_projects_runtime/grok_runtime.py
+index 769fd99..0aed886 100644
+--- a/runtime_phase1/src/workers_projects_runtime/grok_runtime.py
++++ b/runtime_phase1/src/workers_projects_runtime/grok_runtime.py
+@@ -25,17 +25,25 @@ from .openclaw_runtime import ProviderAuthenticationMissingError, RuntimeConfigu
+ from .profile_runtime import BaseCliWorkerRuntime, HostNativeCliMixin, _atomic_write_private_text, _native_tools_disabled, tomllib
+
+
+-def _declares_external_auth(home: Path) -> bool:
++class GrokWorkerAuthDisabledError(ProviderAuthenticationMissingError):
++    code = failure_class = 'provider_auth_disabled'
++
++
++def _external_auth_command(home: Path) -> str | None:
+     try:
+         config = tomllib.loads((home / 'config.toml').read_text())
+     except (OSError, ValueError):
+-        return False  # Existing credential routes still let Grok validate its own config.
++        return None  # Existing credential routes still let Grok validate its own config.
+     for section in ('auth', 'grok_com_config'):
+         table = config.get(section)
+         command = table.get('auth_provider_command') if isinstance(table, dict) else None
+         if isinstance(command, str) and command.strip():
+-            return True
+-    return False
++            return command
++    return None
++
++
++def _declares_external_auth(home: Path) -> bool:
++    return _external_auth_command(home) is not None
+
+
+ def _grok_conversation_skill_config(text):
+@@ -370,9 +378,28 @@ class GrokBuildRuntime(BaseCliWorkerRuntime):
+             env.update(bootstrap_env_for(worker))
+         # Native state must never follow a caller-supplied GROK_HOME into another worker.
+         home = self._grok_home(worker)
+-        command = (os.environ.get('WPR_GROK_AUTH_PROVIDER_COMMAND') if host and
+-                   not multi_user_security_enabled() and native_installed_owner_id() is None
+-                   and native_current_account_allowed(worker) else None)
++        # The managed command's identity remains configured when issuance is off.
++        # The sidecar also identifies homes created by any previous enabled start.
++        managed = os.environ.get('WPR_GROK_MANAGED_AUTH_PROVIDER', '')
++        declared = _external_auth_command(home)
++        marker = home / '.managed-external-auth'
++        saved_managed = marker.exists() or bool(
++            managed and declared and Path(declared).name == Path(managed).name)
++        requested = bootstrap_bundle_for(worker).get('attended_external_auth') is True
++        if (managed or saved_managed) and (requested or saved_managed):
++            settings = os.environ.get('WPR_GROK_AUTH_OFF_PATH', '')
++            issuer = os.environ.get('WPR_GROK_AUTH_ISSUER_FILE', '')
++            if Path(settings).is_absolute() and Path(settings).exists():
++                raise GrokWorkerAuthDisabledError('Grok access is off for the configured account.')
++            if (not host or not managed or not Path(settings).is_absolute() or not Path(issuer).is_absolute()
++                    or os.environ.get('WPR_GROK_AUTH_PROVIDER_COMMAND') != managed
++                    or worker.get('_run_local_attended_external_auth') is not True
++                    or not worker.get('_active_run_id') or not worker.get('_run_attempt_id')
++                    or not native_current_account_allowed(worker)):
++                raise ProviderAuthenticationMissingError('Grok Worker access is no longer authorized for this job.')
++            command = managed
++        else:
++            command = None
+         if command and home.is_symlink():
+             raise ProviderAuthenticationMissingError('Grok Worker sign-in home is not private.')
+         home.mkdir(parents=True, exist_ok=True, mode=0o700)
+@@ -382,7 +409,9 @@ class GrokBuildRuntime(BaseCliWorkerRuntime):
+         if isinstance(owner_grant, dict):
+             self._prepare_owner_deny(home, str(home) if host else f'{self.sandbox.home_mount}/.grok',
+                                      owner_grant.get('deny_rules'))
+-        env.pop('GROK_AUTH_PATH', None)
++        for key in ('GROK_AUTH_PATH', 'WPR_GROK_ATTENDED', 'WPR_GROK_AUTH_OFF_PATH',
++                    'WPR_GROK_AUTH_CACHED_ONLY', 'WPR_GROK_AUTH_SOCKET', 'WPR_GROK_AUTH_ISSUER_FILE'):
++            env.pop(key, None)
+         env['GROK_HOME'] = str(home) if host else f'{self.sandbox.home_mount}/.grok'
+         # Native titles have a separate sampler. Keep its default current while
+         # preserving an explicit native helper-model choice.
+@@ -397,9 +426,17 @@ class GrokBuildRuntime(BaseCliWorkerRuntime):
+             if key.startswith('OTEL_') or key in ('GROK_TELEMETRY_GCS_BUCKET', 'GROK_AGENT_METADATA'):
+                 env.pop(key)
+         apply_bound_provider_account_environment(worker, env, runtime_name=self.runtime_name)
+-        if command and not env.get('GROK_AUTH_PATH') and not env.get('XAI_API_KEY'):
++        if command:
++            if env.get('GROK_AUTH_PATH') or env.get('XAI_API_KEY'):
++                raise ProviderAuthenticationMissingError('Grok Worker has conflicting account authority.')
+             self._prepare_external_auth(home, command)
++            _atomic_write_private_text(marker, '1\n')
+             env['WPR_GROK_ATTENDED'] = '1'
++            env['WPR_GROK_AUTH_OFF_PATH'] = settings
++            env['WPR_GROK_AUTH_ISSUER_FILE'] = issuer
++            # Only the trusted start can opt into cached-only acceptance tests.
++            if os.environ.get('WPR_GROK_AUTH_CACHED_ONLY'):
++                env['WPR_GROK_AUTH_CACHED_ONLY'] = os.environ['WPR_GROK_AUTH_CACHED_ONLY']
+         if (_native_tools_disabled(bootstrap_bundle_for(worker)) or
+                 (str(worker.get('_active_run_id') or '')
+                 and str(worker.get('_run_attempt_id') or '')
+@@ -457,8 +494,15 @@ class GrokBuildRuntime(BaseCliWorkerRuntime):
+         target = self._runner_files(worker)
+         runner = str(target / 'grok_acp_runner.py') if host else f'{self.sandbox.home_mount}/.xperfect-grok/grok_acp_runner.py'
+         binary = self.binary if host else os.environ.get('WPR_GROK_CONTAINER_BIN', 'grok')
++        if worker.get('_run_local_attended_external_auth') is True:
++            binary = os.environ.get('WPR_GROK_MANAGED_BINARY', '')
++            digest = os.environ.get('WPR_GROK_MANAGED_BINARY_SHA256', '')
++            if not Path(binary).is_absolute() or len(digest) != 64:
++                raise ProviderAuthenticationMissingError('The verified Grok Build installation is unavailable.')
+         command = [sys.executable if host else 'python3', runner, '--binary', binary,
+                    '--model', str(info.model)]
++        if worker.get('_run_local_attended_external_auth') is True:
++            command += ['--managed-binary-sha256', digest]
+         if not host and getattr(self.sandbox, 'box', None) is not None:
+             command.append('--managed-home')
+         run_id = str(worker.get('_active_run_id') or '')
+@@ -500,7 +544,7 @@ class GrokBuildRuntime(BaseCliWorkerRuntime):
+         effort = self._bootstrap_env_value(worker, 'WPR_GROK_REASONING_EFFORT') or os.environ.get('WPR_GROK_REASONING_EFFORT', '')
+         if effort:
+             command += ['--effort', effort]
+-        if restricted:
++        if restricted or worker.get('_run_local_attended_external_auth') is True:
+             command += ['--yolo-mode', 'false']
+         elif admitted_mission:
+             authority = launch_authority_for(bundle) or {}
+diff --git a/runtime_phase1/src/workers_projects_runtime/service.py b/runtime_phase1/src/workers_projects_runtime/service.py
+index 0045242..ae0624f 100644
+--- a/runtime_phase1/src/workers_projects_runtime/service.py
++++ b/runtime_phase1/src/workers_projects_runtime/service.py
+@@ -1843,8 +1843,10 @@ class WorkersProjectsService:
+         scheduling_owner_client: ViventiumSchedulingOwnerClient | None = None,
+         local_qa_control_plane: LocalQAControlPlane | None = None,
+         start_background_consumers: bool = True,
++        worker_access_grants_enabled: bool = False,
+     ) -> None:
+         self.store = store
++        self.worker_access_grants_enabled = worker_access_grants_enabled
+         self._personal_library_lock = RLock()
+         self.peers = PeerCollaboration(store, self)
+         self.runtime = runtime
+@@ -15656,6 +15658,7 @@ class WorkersProjectsService:
+                             or self._prompt_workbench_scheduled_authority(worker)
+                             is not None
+                             or self._worker_access_grant(worker) is not None
++                            or self._attended_external_auth_requested(worker, run)
+                         ):
+                             if str(worker.get("execution_mode") or "docker") == "host":
+                                 if not startup_token:
+@@ -19947,6 +19950,8 @@ class WorkersProjectsService:
+         from .owner_worker_access import (MAX_GRANT_SECONDS, WorkerAccessGrantError, deny_rules as valid_rules,
+                                           ensure_schema, finite_expiry, get_grant, grant_proof,
+                                           owner_deny_rules_from_environment, read_grant_key)
++        if not self.worker_access_grants_enabled:
++            raise WorkerAccessGrantError("Unattended worker access grants are disabled")
+         if not standalone_coordinator_host_enabled():
+             raise WorkerAccessGrantError("a grant exists only on a standalone local xPerfect")
+         worker_id = str(worker_id or "")
+@@ -19990,13 +19995,24 @@ class WorkersProjectsService:
+     def _worker_access_grant(self, worker: dict) -> dict | None:
+         """The owner's grant when this exact Worker's runs may use it, else None (a grant is inert anywhere
+         else). Only its row counts; no bundle can carry, create or extend one."""
+-        if str(worker.get("profile") or "") != "grok-build" or str(worker.get("execution_mode") or "") != "host":
++        if not self.worker_access_grants_enabled or worker.get("profile") != "grok-build" or worker.get("execution_mode") != "host":
+             return None
+         grant = self.worker_access_grant_record(str(worker.get("worker_id") or ""))
+         if grant is None or self._local_owner_grok_worker_problem(worker):
+             return None
+         return grant
+
++    def _attended_external_auth_requested(self, worker: dict, run: dict) -> bool:
++        if (not os.environ.get("WPR_GROK_MANAGED_AUTH_PROVIDER")
++                or (self._bootstrap_bundle_for(worker) or {}).get("attended_external_auth") is not True
++                or self._local_owner_grok_worker_problem(worker)):
++            return False
++        from .coordinator import coordinator_current_run_origins
++        with self.store._connect() as conn:
++            if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='coordinator_goals'").fetchone():
++                return False
++            return len(coordinator_current_run_origins(conn, worker, str(run["run_id"]))) == 1
++
+     def _run_local_admitted_worker(
+         self,
+         worker: dict,
+@@ -20058,6 +20074,18 @@ class WorkersProjectsService:
+         if authorization is None and scheduled_authority is None:
+             grant = self._worker_access_grant(worker)
+             if grant is None:
++                lease_id = (authority_context or {}).get("host_startup_lease_id")
++                if (self._attended_external_auth_requested(worker, run)
++                        and isinstance(lease_id, str) and re.fullmatch(r"[a-f0-9]{64}", lease_id)):
++                    return {
++                        **worker,
++                        "_run_local_attended_external_auth": True,
++                        "_run_local_capability_binding": {
++                            "workerId": str(worker["worker_id"]),
++                            "runId": str(run["run_id"]),
++                            "hostStartupLeaseId": lease_id,
++                        },
++                    }
+                 return worker
+             # The owner's grant admits only this exact run generation, until it expires (the runner
+             # ends approval then), and only with the deny list it was minted under.
+diff --git a/runtime_phase1/tests/test_grok_external_auth.py b/runtime_phase1/tests/test_grok_external_auth.py
+index 6f64ce4..0f4ab11 100644
+--- a/runtime_phase1/tests/test_grok_external_auth.py
++++ b/runtime_phase1/tests/test_grok_external_auth.py
+@@ -6,18 +6,27 @@ from io import StringIO
+ import pytest
+
+ from workers_projects_runtime import grok_acp, grok_acp_runner
+-from workers_projects_runtime.failure_classification import classify_cli_failure
+-from workers_projects_runtime.grok_runtime import HostGrokBuildRuntime
++from workers_projects_runtime.failure_classification import classify_cli_failure, classify_runtime_error
++from workers_projects_runtime.grok_runtime import GrokWorkerAuthDisabledError, HostGrokBuildRuntime
++from workers_projects_runtime.openclaw_runtime import ProviderAuthenticationMissingError
+
+
+ def test_local_provider_declares_auth_in_a_fresh_private_worker_home(tmp_path, monkeypatch):
+     runtime = HostGrokBuildRuntime(str(tmp_path / 'runtime'))
+-    worker = {'worker_id': 'worker', 'profile': 'grok-build'}
++    worker = {'worker_id': 'worker', 'profile': 'grok-build',
++              'bootstrap_bundle_json': {'attended_external_auth': True},
++              '_run_local_attended_external_auth': True, '_active_run_id': 'run', '_run_attempt_id': 'attempt'}
+     home = runtime._grok_home(worker)
+     monkeypatch.setattr(runtime, '_host_env', lambda _: {})
+     monkeypatch.setattr(runtime, '_current_host_auth_path', lambda _: None)
+     command = str(tmp_path / 'Light tools' / 'grok-worker-auth')
++    off = tmp_path / 'grok_mind.off'
+     monkeypatch.setenv('WPR_GROK_AUTH_PROVIDER_COMMAND', command)
++    monkeypatch.setenv('WPR_GROK_MANAGED_AUTH_PROVIDER', command)
++    monkeypatch.setenv('WPR_GROK_AUTH_OFF_PATH', str(off))
++    monkeypatch.setenv('WPR_GROK_AUTH_ISSUER_FILE', str(tmp_path / 'issuer.py'))
++    with pytest.raises(ProviderAuthenticationMissingError):
++        runtime._native_environment({**worker, '_run_local_attended_external_auth': False}, host=True)
+
+     env = runtime._native_environment(worker, host=True)
+
+@@ -28,6 +37,18 @@ def test_local_provider_declares_auth_in_a_fresh_private_worker_home(tmp_path, m
+     assert env['GROK_AUTH_PATH'] == '/dev/null/auth.json'
+     assert env['WPR_GROK_ATTENDED'] == '1'
+
++    # The running service sees the switch immediately. On restart the command
++    # disappears, but a saved home may still have the old [auth] entry.
++    off.touch()
++    with pytest.raises(GrokWorkerAuthDisabledError) as disabled:
++        runtime._native_environment(worker, host=True)
++    assert classify_runtime_error(disabled.value, runtime_name='grok-build').failure_class == 'provider_auth_disabled'
++    off.unlink()
++    monkeypatch.delenv('WPR_GROK_AUTH_PROVIDER_COMMAND')
++    with pytest.raises(ProviderAuthenticationMissingError):
++        runtime._native_environment(worker, host=True)
++    assert config.read_text() == f'\n[auth]\nauth_provider_command = {json.dumps(command)}\n'
++
+
+ @pytest.mark.parametrize('section', ['auth', 'grok_com_config'])
+ def test_external_auth_boots_from_worker_config_without_consulting_current_login(tmp_path, monkeypatch, section):
+@@ -100,7 +121,72 @@ for line in sys.stdin:
+     assert status == 2
+     assert not any(event.get('phase') == 'prompt_started' for event in events)
+     assert 'private failure detail' not in captured.out + captured.err
+-    assert events[-1]['failure_class'] == 'provider_auth_missing'
++    expected = 'provider_auth_timeout' if outcome == 'timeout' else 'provider_auth_missing'
++    assert events[-1]['failure_class'] == expected
+     failure = classify_cli_failure(stdout=captured.out, stderr=captured.err, runtime_name='grok-build', exit_code=2)
+-    assert failure.failure_class == 'provider_auth_missing'
+-    assert 'sign in' in failure.user_message.lower()
++    assert failure.failure_class == expected
++    assert ('sign in' in failure.user_message.lower()) == (outcome != 'timeout')
++
++
++def test_provider_gate_serves_only_the_running_native_process(tmp_path):
++    import socket
++    import subprocess
++    import tempfile
++    from pathlib import Path
++    from threading import Thread
++
++    helper = """import socket, sys
++with socket.socket(socket.AF_UNIX) as s:
++    s.settimeout(2)
++    s.connect(sys.argv[1])
++    s.sendall(b'B')
++    sys.stdout.buffer.write(s.recv(256))
++"""
++    parent = """import subprocess, sys
++assert sys.stdin.readline() == 'go\\n'
++result = subprocess.run([sys.executable, '-c', sys.argv[1], sys.argv[2]], capture_output=True, check=True)
++sys.stdout.buffer.write(result.stdout)
++"""
++    issued = []
++    status = []
++
++    def credential(background):
++        issued.append(background)
++        return b'K', b'synthetic-access'
++
++    with tempfile.TemporaryDirectory(prefix='grok-gate-test-', dir='/tmp') as socket_dir, socket.socket(socket.AF_UNIX) as gate:
++        path = str(Path(socket_dir) / 'gate')
++        gate.bind(path)
++        gate.listen(4)
++        gate.settimeout(0.1)
++        with subprocess.Popen([sys.executable, '-c', parent, helper, path],
++                              stdin=subprocess.PIPE, stdout=subprocess.PIPE) as native:
++            thread = Thread(target=grok_acp_runner._serve_provider_gate,
++                            args=(gate, native, credential, status), daemon=True)
++            thread.start()
++            try:
++                outside = subprocess.run([sys.executable, '-c', helper, path], capture_output=True, timeout=3)
++                assert not outside.stdout and not issued
++                output, _ = native.communicate(b'go\n', timeout=5)
++                assert native.returncode == 0 and output == b'synthetic-access'
++                assert issued == [True] and status == [b'K']
++            finally:
++                if native.poll() is None:
++                    native.kill()
++                thread.join(1)
++
++
++def test_managed_worker_refuses_unverified_binary_before_start(tmp_path, monkeypatch, capfd):
++    bad = tmp_path / 'grok'
++    marker = tmp_path / 'executed'
++    bad.write_text(f'#!/bin/sh\ntouch {marker}\n')
++    bad.chmod(0o700)
++    monkeypatch.setenv('WPR_GROK_ATTENDED', '1')
++    monkeypatch.setenv('GROK_HOME', str(tmp_path / 'home'))
++    monkeypatch.setenv('GROK_AUTH_PATH', '/dev/null/auth.json')
++    monkeypatch.setattr(sys, 'stdin', StringIO('synthetic instruction'))
++    code = grok_acp_runner.main(['--binary', str(bad), '--model', 'grok-test', '--yolo-mode', 'false',
++                                 '--managed-binary-sha256', 'a' * 64, '--control-dir', str(tmp_path),
++                                 '--run-id', 'run', '--attempt-id', 'attempt'])
++    assert code == 2 and not marker.exists()
++    assert 'verified attended Grok Worker could not start' in capfd.readouterr().out
+diff --git a/runtime_phase1/tests/test_grok_runtime.py b/runtime_phase1/tests/test_grok_runtime.py
+index e22a9b2..fa8d4c5 100644
+--- a/runtime_phase1/tests/test_grok_runtime.py
++++ b/runtime_phase1/tests/test_grok_runtime.py
+@@ -729,10 +729,15 @@ def test_attended_permission_deadline_stops_an_unresponsive_native_peer(tmp_path
+            "from workers_projects_runtime import grok_acp_runner as r\n"
+            "r.ControlMailbox = functools.partial(r.ControlMailbox, permission_timeout=.2)\n"
+            "sys.exit(r.main(sys.argv[1:]))\n")
++    import hashlib
++    issuer = tmp_path / 'issuer.py'
++    issuer.write_text("def credential(off, *, cached_for): return b'K', b'synthetic-access'\n")
+     command = [sys.executable, '-c', run, '--binary', str(peer), '--model', 'grok-selected',
++               '--managed-binary-sha256', hashlib.sha256(peer.read_bytes()).hexdigest(), '--yolo-mode', 'false',
+                '--control-dir', str(tmp_path / 'control'), '--run-id', 'run', '--attempt-id', 'attempt']
+     env = {**os.environ, 'GROK_HOME': str(tmp_path / 'home'), 'GROK_AUTH_PATH': '/dev/null/auth.json',
+-           'WPR_GROK_ATTENDED': '1', 'PYTHONPATH': str(Path(grok_acp_runner.__file__).parents[1])}
++           'WPR_GROK_ATTENDED': '1', 'PYTHONPATH': str(Path(grok_acp_runner.__file__).parents[1]),
++           'WPR_GROK_AUTH_ISSUER_FILE': str(issuer), 'WPR_GROK_AUTH_OFF_PATH': str(tmp_path / 'grok.off')}
+     with subprocess.Popen(command, env=env, cwd=tmp_path, text=True, stdin=subprocess.PIPE,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True) as runner:
+         try:
+diff --git a/runtime_phase1/tests/test_owner_grok_grant.py b/runtime_phase1/tests/test_owner_grok_grant.py
+index b74b765..2c414fa 100644
+--- a/runtime_phase1/tests/test_owner_grok_grant.py
++++ b/runtime_phase1/tests/test_owner_grok_grant.py
+@@ -40,7 +40,8 @@ def standalone(monkeypatch, tmp_path):
+
+ @pytest.fixture
+ def service(tmp_path, standalone):
+-    service = WorkersProjectsService(Store(str(tmp_path / "state.db")), StubRuntime(), reconcile_on_startup=False)
++    service = WorkersProjectsService(Store(str(tmp_path / "state.db")), StubRuntime(), reconcile_on_startup=False,
++                                     worker_access_grants_enabled=True)
+     ensure_grant_key(tmp_path)
+     yield service
+     service.shutdown()
+@@ -156,7 +157,8 @@ def test_no_bundle_path_creates_or_extends_a_grant(service):
+
+ def test_a_database_of_the_earlier_tree_opens_and_gains_the_record_on_first_use(tmp_path, standalone):
+     store = Store(str(tmp_path / "old.db"))
+-    service = WorkersProjectsService(store, StubRuntime(), reconcile_on_startup=False)
++    service = WorkersProjectsService(store, StubRuntime(), reconcile_on_startup=False,
++                                     worker_access_grants_enabled=True)
+     try:
+         worker = make(service)
+         with sqlite3.connect(tmp_path / "old.db") as conn:
+@@ -448,7 +450,7 @@ def test_a_question_window_starts_when_the_question_is_asked(tmp_path):
+ def test_the_api_mints_only_with_the_owners_proof(tmp_path, standalone, monkeypatch):
+     from fastapi.testclient import TestClient
+     from workers_projects_runtime.api import create_app
+-    client = TestClient(create_app(str(tmp_path / "runtime.db"), runtime=StubRuntime()))
++    client = TestClient(create_app(str(tmp_path / "runtime.db"), runtime=StubRuntime(), worker_access_grants_enabled=True))
+     key = read_grant_key(tmp_path / "worker-access-grant.key")  # (made by the app at its start, standalone)
+     project = client.post("/v1/projects", json={"owner_id": "owner-a", "title": "Jobs", "goal": "g"}).json()
+     body = {"owner_id": "owner-a", "name": "Job worker", "role": "worker", "profile": "grok-build",
+@@ -482,3 +484,24 @@ def test_under_a_grant_a_command_grok_still_asks_about_is_refused_at_once_and_ne
+     assert answer == "reject-once" and time.monotonic() - began < 1
+     assert not list(root.glob("*.pending"))  # (nothing the Worker could answer for itself)
+     assert events[-1]["type"] == "grok.permission.refused" and events[-1]["reason"] == "owner_grant"
++
++
++def test_production_grants_do_not_create_a_key_or_admit_existing_rows(tmp_path, service):
++    from workers_projects_runtime.api import create_app
++
++    production_db = tmp_path / "production" / "runtime.db"
++    production_db.parent.mkdir()
++    create_app(str(production_db), runtime=StubRuntime(), reconcile_on_startup=False)
++    assert not (production_db.parent / "worker-access-grant.key").exists()
++
++    worker = make(service)
++    grant = mint(service, worker)
++    production = WorkersProjectsService(service.store, StubRuntime(), reconcile_on_startup=False,
++                                        start_background_consumers=False)
++    try:
++        with pytest.raises(WorkerAccessGrantError, match="disabled"):
++            mint(production, worker)
++        assert production.worker_access_grant_record(worker["worker_id"]) == grant
++        assert "_run_local_owner_grant" not in run_worker_for(production, worker)
++    finally:
++        production.shutdown()
+diff --git a/runtime_phase1/tests/test_owner_grok_grant_review.py b/runtime_phase1/tests/test_owner_grok_grant_review.py
+index 0d6462d..5706af3 100644
+--- a/runtime_phase1/tests/test_owner_grok_grant_review.py
++++ b/runtime_phase1/tests/test_owner_grok_grant_review.py
+@@ -32,7 +32,8 @@ def service(tmp_path, monkeypatch):
+                  "VIVENTIUM_GLASSHIVE_ISOLATED_PARALLEL_POLICY"):
+         monkeypatch.delenv(name, raising=False)
+     monkeypatch.setenv("GROK_HOME", str(tmp_path / "unconnected-grok"))
+-    service = WorkersProjectsService(Store(str(tmp_path / "state.db")), StubRuntime(), reconcile_on_startup=False)
++    service = WorkersProjectsService(Store(str(tmp_path / "state.db")), StubRuntime(), reconcile_on_startup=False,
++                                     worker_access_grants_enabled=True)
+     try:
+         from workers_projects_runtime.owner_worker_access import ensure_grant_key
+         ensure_grant_key(tmp_path)

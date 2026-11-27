@@ -1,0 +1,76 @@
+/* Getting something this Mac does not have yet (components/install.tsx): a thin line, a percent, a few plain
+   words. Its button is the page's own (.vs-act); every colour here is one of the page's tokens (settings.css). */
+
+.vs-install {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  max-width: 100%;
+  font-size: 12.5px;
+  color: var(--soft);
+  text-align: left;
+}
+.vs-install[data-state='running'] {
+  align-items: stretch;
+  width: min(208px, 100%);
+}
+.vs-install-words {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vs-install-words b {
+  font-weight: 600;
+  color: var(--text);
+}
+.vs-install-line {
+  position: relative;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-2);
+  overflow: hidden;
+}
+.vs-install-line i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+  background: var(--text);
+  transition: width 900ms var(--ease);
+}
+.vs-install-why {
+  max-width: 260px;
+  color: var(--low);
+  line-height: 1.35;
+}
+/* A reason needs the whole width of its tile, and on a narrow screen so does the line: both drop under the
+   option's own words (in line with them, past its mark) instead of squeezing them. */
+.vs-opt:has(.vs-install[data-state='failed']) {
+  flex-wrap: wrap;
+}
+.vs-opt:has(.vs-install[data-state='failed']) > .vs-opt-side {
+  flex-basis: 100%;
+  padding-left: 53px;
+}
+.vs-opt:has(.vs-install[data-state='failed']) .vs-install-why {
+  max-width: none;
+}
+@media (max-width: 900px) {
+  .vs-opt:has(.vs-install[data-state='running']) {
+    flex-wrap: wrap;
+  }
+  .vs-opt:has(.vs-install[data-state='running']) > .vs-opt-side {
+    flex-basis: 100%;
+    padding-left: 53px;
+  }
+  .vs-opt:has(.vs-install[data-state='running']) .vs-install {
+    width: 100%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vs-install-line i {
+    transition: none;
+  }
+}

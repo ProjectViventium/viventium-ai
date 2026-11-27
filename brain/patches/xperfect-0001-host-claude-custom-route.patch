@@ -1,0 +1,132 @@
+diff --git a/runtime_phase1/src/workers_projects_runtime/profile_runtime.py b/runtime_phase1/src/workers_projects_runtime/profile_runtime.py
+index d4b7ba7..a4e8fd8 100644
+--- a/runtime_phase1/src/workers_projects_runtime/profile_runtime.py
++++ b/runtime_phase1/src/workers_projects_runtime/profile_runtime.py
+@@ -9487,6 +9487,19 @@ class CodexCliRuntime(BaseCliWorkerRuntime):
+ 
+ 
+ 
++def claude_code_custom_route() -> dict[str, str]:
++    """An explicit Anthropic-compatible endpoint for Claude Code Workers, from xPerfect's own config.
++
++    Mirrors WPR_CODEX_CLI_BASE_URL. The launcher drops WPR_* from the starting shell, so only the
++    instance configuration can set it; an endpoint in the ambient environment never reroutes Workers.
++    """
++    url = os.environ.get("WPR_CLAUDE_CODE_BASE_URL", "").strip()
++    token = os.environ.get("WPR_CLAUDE_CODE_AUTH_TOKEN", "").strip()
++    if not url:
++        return {}
++    return {"ANTHROPIC_BASE_URL": url, **({"ANTHROPIC_AUTH_TOKEN": token} if token else {})}
++
++
+ class ClaudeCodeRuntime(BaseCliWorkerRuntime):
+     runtime_name = "claude-code"
+     worker_root_name = "claude_code_runtime"
+@@ -9730,6 +9743,7 @@ class ClaudeCodeRuntime(BaseCliWorkerRuntime):
+             "SSL_CERT_FILE",
+             "SSL_CERT_DIR",
+         )
++        env.update(claude_code_custom_route())
+         use_api_key = os.environ.get("WPR_CLAUDE_CODE_USE_API_KEY", "0").strip().lower() in {"1", "true", "yes", "on"}
+         if not use_api_key:
+             env.pop("ANTHROPIC_API_KEY", None)
+@@ -17198,6 +17212,7 @@ class HostClaudeCodeRuntime(HostNativeCliMixin, ClaudeCodeRuntime):
+         if session_key and not session_key.startswith("claude-worker:"):
+             command.extend(["--resume", session_key])
+         env = self._host_env(worker)
++        env.update(claude_code_custom_route())  # parity with the Docker launch
+         env.pop("CLAUDE_CODE_OAUTH_REFRESH_TOKEN", None)
+         use_api_key = os.environ.get("WPR_CLAUDE_CODE_USE_API_KEY", "0").strip().lower() in {"1", "true", "yes", "on"}
+         if not use_api_key:
+@@ -17217,7 +17232,23 @@ class HostClaudeCodeRuntime(HostNativeCliMixin, ClaudeCodeRuntime):
+             and worker.get("_glasshive_provider_account_preferred_fallback")
+         )
+         env.pop("CLAUDE_CODE_OAUTH_REFRESH_TOKEN", None)
+-        if use_host_auth and not self._bedrock_enabled():
++        custom_route = bool(str(env.get("ANTHROPIC_BASE_URL") or "").strip())
++        if custom_route and not (  # a credential provided for this endpoint, never the owner's sign-in
++            str(env.get("ANTHROPIC_AUTH_TOKEN") or "").strip()
++            or _usable_claude_oauth_token(env.get("CLAUDE_CODE_OAUTH_TOKEN"))
++            or (use_api_key and str(env.get("ANTHROPIC_API_KEY") or "").strip())
++        ):
++            raise ProviderAuthenticationMissingError(
++                "A custom Claude Code endpoint needs its own token.",
++                binary=self.binary,
++                runtime_name=self.runtime_name,
++                profile=str(worker.get("profile") or "claude-code"),
++                execution_mode="host",
++                dependency_label="Claude Code authentication",
++                recovery_hint="Set WPR_CLAUDE_CODE_AUTH_TOKEN for that endpoint, then retry the same request.",
++            )
++        # The owner's claude.ai sign-in is for Anthropic only; never send it to another endpoint.
++        if use_host_auth and not custom_route and not self._bedrock_enabled():
+             if native_current_account_allowed(worker) and not (
+                 use_api_key and str(env.get("ANTHROPIC_API_KEY") or "").strip()
+             ):
+diff --git a/runtime_phase1/tests/test_profile_runtime.py b/runtime_phase1/tests/test_profile_runtime.py
+index 99641d8..86f9b23 100644
+--- a/runtime_phase1/tests/test_profile_runtime.py
++++ b/runtime_phase1/tests/test_profile_runtime.py
+@@ -13370,3 +13370,62 @@ def test_settling_native_run_shows_saved_root_output_without_starting_compute(tm
+     if has_output: assert "another native child is still finishing" in output
+     else: assert "settling" in output and "No terminal output was kept" in output
+     assert run["state"] == "settling"
++
++
++def _host_claude_fixture(tmp_path):
++    fake_claude = tmp_path / "claude"
++    fake_claude.write_text(
++        "#!/usr/bin/env bash\n"
++        "if [[ \"$1\" == \"--help\" ]]; then echo 'Usage: claude [options] --effort --chrome'; exit 0; fi\n"
++        "echo '2.1.223 (Claude Code)'\n"
++    )
++    fake_claude.chmod(0o755)
++    runtime = HostClaudeCodeRuntime(base_dir=str(tmp_path / "data"))
++    runtime.binary = str(fake_claude)
++    worker = {
++        "worker_id": "wrk_host_claude_route",
++        "name": "Local Claude Worker",
++        "profile": "claude-code",
++        "execution_mode": "host",
++        "model": "qwen3.6:latest",
++        "workspace_root": str(tmp_path / "workspaces"),
++    }
++    return runtime, worker
++
++
++def test_host_claude_custom_endpoint_uses_its_own_token_not_the_owner_sign_in(tmp_path, monkeypatch):
++    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-owner-sign-in")
++    monkeypatch.setenv("WPR_CLAUDE_CODE_BASE_URL", "http://127.0.0.1:11436")
++    monkeypatch.setenv("WPR_CLAUDE_CODE_AUTH_TOKEN", "synthetic-gateway-token")
++    runtime, worker = _host_claude_fixture(tmp_path)
++
++    command, env = runtime._build_command(worker, "do the work", runtime._host_runtime_info(worker))
++
++    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:11436"
++    assert env["ANTHROPIC_AUTH_TOKEN"] == "synthetic-gateway-token"
++    assert "synthetic-owner-sign-in" not in env.values()
++    assert command[command.index("--model") + 1] == "qwen3.6:latest"
++
++
++def test_host_claude_custom_endpoint_without_its_own_token_is_a_typed_auth_error(tmp_path, monkeypatch):
++    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-owner-sign-in")
++    monkeypatch.setenv("WPR_CLAUDE_CODE_BASE_URL", "http://127.0.0.1:11436")
++    monkeypatch.delenv("WPR_CLAUDE_CODE_AUTH_TOKEN", raising=False)
++    monkeypatch.delenv("WPR_CLAUDE_CODE_USE_API_KEY", raising=False)
++    from workers_projects_runtime.profile_runtime import ProviderAuthenticationMissingError
++    runtime, worker = _host_claude_fixture(tmp_path)
++
++    with pytest.raises(ProviderAuthenticationMissingError):
++        runtime._build_command(worker, "do the work", runtime._host_runtime_info(worker))
++
++
++def test_host_claude_ignores_an_endpoint_in_the_ambient_environment(tmp_path, monkeypatch):
++    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "synthetic-owner-sign-in")
++    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://proxy.example.invalid")
++    monkeypatch.delenv("WPR_CLAUDE_CODE_BASE_URL", raising=False)
++    runtime, worker = _host_claude_fixture(tmp_path)
++
++    _, env = runtime._build_command(worker, "do the work", runtime._host_runtime_info(worker))
++
++    assert "ANTHROPIC_BASE_URL" not in env
++

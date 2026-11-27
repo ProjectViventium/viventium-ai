@@ -1,0 +1,236 @@
+"""Markdown to Telegram HTML: her bold, italics, code, links and quotes shown as real formatting.
+
+Ported unchanged from main Viventium (telegram-viventium/TelegramVivBot/utils/telegram_html.py): HTML
+mode needs only <, > and & escaped, where MarkdownV2 needed 17 characters and failed whole on one miss.
+Headings become bold lines, bullets "•", tables "- **Header:** cell; …" rows."""
+import re
+from typing import Callable, Dict
+
+_FENCE_LINE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})(.*)$")
+_INLINE_CODE_RE = re.compile(r"`([^`\n]+?)`")
+_LINK_RE = re.compile(r"!?\[([^\]]*)\]\(([^)]+)\)")
+LINK = _LINK_RE  # (the links a decision is made on: here and in a voice note's caption, chat/telegram.readable)
+_BOLD_ASTERISK_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_BOLD_UNDERSCORE_RE = re.compile(
+    r"(?<![\w])__(?![_\s])(.+?)(?<![\s_])__(?![\w])",
+    re.DOTALL,
+)
+_ITALIC_ASTERISK_RE = re.compile(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)")
+_ITALIC_UNDERSCORE_RE = re.compile(
+    r"(?<![\w])_(?![_\s])(.+?)(?<![\s_])_(?![\w])",
+    re.DOTALL,
+)
+_STRIKETHROUGH_RE = re.compile(r"~~(.+?)~~")
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+_BLOCKQUOTE_RE = re.compile(r"^>\s?(.*)$", re.MULTILINE)
+_BULLET_RE = re.compile(r"^(\s*)[-*]\s+", re.MULTILINE)
+_HR_RE = re.compile(r"^---+$", re.MULTILINE)
+_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+
+
+def _replace_fences(text: str, store) -> str:
+    """Fenced code blocks as <pre><code>: a fence closes only on a line of the same character at least as long (a
+    longer outer fence holds a shorter one: its inner fences are code), its language from its opening line; one never
+    closed is code to the end, as Markdown reads it. One rule with brain/queen.code_pieces."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        found = _FENCE_LINE_RE.match(lines[i])
+        if not found:
+            out.append(lines[i])
+            i += 1
+            continue
+        fence, info, body, j = found.group(1), found.group(2).strip(), [], i + 1
+        while j < len(lines):
+            closing = _FENCE_LINE_RE.match(lines[j])
+            if closing and closing.group(1)[0] == fence[0] and len(closing.group(1)) >= len(fence) and not closing.group(2).strip():
+                break
+            body.append(lines[j])
+            j += 1
+        lang = info.split()[0] if info else ""
+        code = _escape_html("\n".join(body))
+        if lang and re.fullmatch(r"[\w+#.-]+", lang):
+            out.append(store(f'<pre><code class="language-{_escape_html_attr(lang)}">{code}</code></pre>'))
+        else:
+            out.append(store(f"<pre><code>{code}</code></pre>"))
+        i = j + 1
+    return "\n".join(out)
+
+
+_QUOTE_RE = re.compile(r"^[ \t]*(?:>[ \t]?)+")
+
+
+def quoted_fences(text: str) -> list[tuple[int, int]]:
+    """Where a fence written inside a quote runs (its lines behind `>`), as offsets in `text`. The fence step reads a fence
+    only at a line's start, so these lines reach the link step as text: a link there is drawn exactly as main draws it,
+    never decided (markdown_to_html's `link`). A line outside the quote ends it."""
+    spans, at, start, fence = [], 0, 0, ""
+    for line in text.split("\n"):
+        quote = _QUOTE_RE.match(line)
+        found = _FENCE_LINE_RE.match(line[quote.end():]) if quote else None
+        if fence:
+            if not quote:
+                spans.append((start, at))
+                fence = ""
+            elif found and found.group(1)[0] == fence[0] and len(found.group(1)) >= len(fence) and not found.group(2).strip():
+                spans.append((start, at + len(line)))
+                fence = ""
+        elif found:
+            fence, start = found.group(1), at
+        at += len(line) + 1
+    if fence:
+        spans.append((start, at))
+    return spans
+
+
+def _escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _escape_html_attr(text: str) -> str:
+    return _escape_html(text).replace('"', "&quot;")
+
+
+def _split_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if "|" not in stripped:
+        return []
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return cells if any(cells) else []
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _split_table_row(line)
+    if not cells:
+        return False
+    return all(_TABLE_SEPARATOR_CELL_RE.fullmatch(cell.replace(" ", "")) for cell in cells)
+
+
+def _format_table_row(headers: list[str], row: list[str]) -> str:
+    parts: list[str] = []
+    for index, cell in enumerate(row):
+        if not cell:
+            continue
+        header = headers[index] if index < len(headers) and headers[index] else f"Column {index + 1}"
+        parts.append(f"**{header}:** {cell}")
+    if not parts:
+        return ""
+    return "- " + "; ".join(parts)
+
+
+def _convert_markdown_tables(text: str) -> str:
+    lines = text.split("\n")
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        if index + 1 < len(lines):
+            headers = _split_table_row(lines[index])
+            if headers and _is_table_separator(lines[index + 1]):
+                rows: list[str] = []
+                row_index = index + 2
+                while row_index < len(lines):
+                    row = _split_table_row(lines[row_index])
+                    if not row:
+                        break
+                    if not _is_table_separator(lines[row_index]):
+                        formatted = _format_table_row(headers, row)
+                        if formatted:
+                            rows.append(formatted)
+                    row_index += 1
+                if rows:
+                    out.extend(rows)
+                    index = row_index
+                    continue
+        out.append(lines[index])
+        index += 1
+    return "\n".join(out)
+
+
+def markdown_to_html(text: str, link: Callable[[str], bool] | None = None) -> str:
+    """Convert standard Markdown to Telegram-compatible HTML.
+
+    Uses a placeholder system to protect already-converted regions from
+    being re-processed by subsequent regex passes. `link(target)`, when given, is asked of each link this finds, never
+    of code or of a quoted fence (drawn as main draws them): False draws its label alone, as the link would show it
+    (core/attachments.shown_as_link). A message that would be left empty is main's rendering.
+    """
+    if not text:
+        return ""
+
+    placeholders: Dict[str, str] = {}
+    counter = [0]
+
+    def _store(html: str) -> str:
+        key = f"\x00PH{counter[0]}\x00"
+        counter[0] += 1
+        placeholders[key] = html
+        return key
+
+    def _replace_inline_code(m: re.Match) -> str:
+        return _store(f"<code>{_escape_html(m.group(1))}</code>")
+
+    def _replace_link(m: re.Match) -> str:
+        label = _escape_html(m.group(1))
+        if link is not None and not any(a <= m.start() < b for a, b in quoted) and not link(m.group(2)):
+            return _store(label)
+        url = _escape_html_attr(m.group(2))
+        return _store(f'<a href="{url}">{label}</a>')
+
+    result = text
+
+    result = _replace_fences(result, _store)
+    result = _INLINE_CODE_RE.sub(_replace_inline_code, result)
+    quoted = quoted_fences(result) if link is not None else []
+    result = _LINK_RE.sub(_replace_link, result)
+    result = _convert_markdown_tables(result)
+
+    result = _BOLD_ASTERISK_RE.sub(lambda m: _store(f"<b>{_escape_html(m.group(1))}</b>"), result)
+    result = _BOLD_UNDERSCORE_RE.sub(lambda m: _store(f"<b>{_escape_html(m.group(1))}</b>"), result)
+    result = _STRIKETHROUGH_RE.sub(lambda m: _store(f"<s>{_escape_html(m.group(1))}</s>"), result)
+    result = _ITALIC_ASTERISK_RE.sub(lambda m: _store(f"<i>{_escape_html(m.group(1))}</i>"), result)
+    result = _ITALIC_UNDERSCORE_RE.sub(lambda m: _store(f"<i>{_escape_html(m.group(1))}</i>"), result)
+    result = _HEADING_RE.sub(lambda m: _store(f"\n<b>{_escape_html(m.group(2))}</b>\n"), result)
+
+    result = _BULLET_RE.sub(lambda m: f"{m.group(1)}• ", result)
+    result = _HR_RE.sub("─────────────────", result)
+
+    blockquote_lines = []
+    out_lines = []
+    for line in result.split("\n"):
+        bq = _BLOCKQUOTE_RE.match(line)
+        if bq:
+            blockquote_lines.append(bq.group(1))
+        else:
+            if blockquote_lines:
+                content = "\n".join(blockquote_lines)
+                out_lines.append(_store(f"<blockquote>{_escape_html(content)}</blockquote>"))
+                blockquote_lines = []
+            out_lines.append(line)
+    if blockquote_lines:
+        content = "\n".join(blockquote_lines)
+        out_lines.append(_store(f"<blockquote>{_escape_html(content)}</blockquote>"))
+    result = "\n".join(out_lines)
+
+    result = _escape_html(result)
+    result = re.sub(r"\n{3,}", "\n\n", result)  # (before code comes back: its own blank lines stay as written)
+
+    # Later placeholders can wrap earlier ones (for example, a blockquote
+    # containing bold or italic text). Resolve outer placeholders first so
+    # their protected inner tokens are present when those tokens are restored.
+    for key, value in reversed(placeholders.items()):
+        result = result.replace(key, value)
+
+    result = result.strip()
+    return result if result or link is None else markdown_to_html(text)  # (never an empty message: main's instead)
+
+
+def strip_html_tags(text: str) -> str:
+    """Strip all HTML tags for plain-text fallback."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", "", text)
+    cleaned = cleaned.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    return cleaned.strip()

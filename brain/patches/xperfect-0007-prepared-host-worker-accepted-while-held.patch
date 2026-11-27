@@ -1,0 +1,92 @@
+diff --git a/docs/03_Bootstrap_Auth_and_Identity_Projection.md b/docs/03_Bootstrap_Auth_and_Identity_Projection.md
+index bed2680..9493119 100644
+--- a/docs/03_Bootstrap_Auth_and_Identity_Projection.md
++++ b/docs/03_Bootstrap_Auth_and_Identity_Projection.md
+@@ -264,7 +264,10 @@ session directly. The typed v1 capacity dimensions are separate: 2 active conver
+ CLI profile/family lane, 3 active missions per CLI profile/family lane, 4 active missions per
+ account, and 12 active missions per tenant by default. Manual host missions share a conservative
+ mutation lease: model-supplied repository names or bootstrap fields cannot buy independent access.
+-Host resource headroom is a separate measured vector.
++Host resource headroom is a separate measured vector. Preparing an idle host worker
++(`start_synchronously: false`) starts no compute, so it is accepted while those slots or that lease
++are held; each of its runs still takes its own lease, and a manual run the mutation lease, when it is
++assigned and launched.
+ 
+ Standalone Chat's Queen can run independent helpers within that capacity. The exception belongs
+ only to the authenticated owner's current accepted goal and exact worker/run (including a saved
+diff --git a/runtime_phase1/src/workers_projects_runtime/service.py b/runtime_phase1/src/workers_projects_runtime/service.py
+index 5fa60c8..68c2c02 100644
+--- a/runtime_phase1/src/workers_projects_runtime/service.py
++++ b/runtime_phase1/src/workers_projects_runtime/service.py
+@@ -9495,11 +9495,13 @@ class WorkersProjectsService:
+         resource_memory_bytes = _configured_worker_resource_memory_bytes(
+             clean_resource_class
+         )
+-        # Preparing a linked host conversation workspace starts no compute. Reuse the
+-        # durable queue when native slots are occupied; launch still holds its lease.
++        # Preparing a host workspace starts no compute: a linked conversation worker's, or an
++        # idle mission worker's whose runs come later. Reuse the durable queue when native slots
++        # or the manual-mission fence are occupied; each run still takes its own lease (and a
++        # manual run its fence) when it is assigned and launched.
+         preflight = (
+             self._queued_runtime_preflight
+-            if clean_trusted_lane == "conversation" and execution_mode == "host" and not start_synchronously
++            if execution_mode == "host" and not start_synchronously
+             else self._reserved_runtime_preflight
+         )
+         preflight(
+diff --git a/runtime_phase1/tests/test_host_run_leases.py b/runtime_phase1/tests/test_host_run_leases.py
+index d3ba342..b85e97c 100644
+--- a/runtime_phase1/tests/test_host_run_leases.py
++++ b/runtime_phase1/tests/test_host_run_leases.py
+@@ -6443,6 +6443,50 @@ def test_model_authored_mutation_scopes_cannot_bypass_conservative_serialization
+     assert unscoped_first
+ 
+ 
++@pytest.mark.parametrize(("slots", "held_by"), [("3", "mutation_scope"), ("1", "family_lane")])
++def test_a_prepared_host_worker_is_accepted_while_a_manual_run_holds_the_host(tmp_path, monkeypatch, slots, held_by):
++    """Preparing an idle host worker starts no compute, so it is accepted while a manual mission's run holds the
++    host: its one-at-a-time fence (several slots), or its lane's only slot. A worker started at once keeps the
++    conservative refusal, and the prepared worker's own manual run still waits for its lease."""
++    monkeypatch.setenv("WPR_HOST_MISSION_SLOTS_PER_CLI", slots)
++
++    class HostRuntime(StubRuntime):
++        preflight_uses_cli_subprocess = True  # (the host CLIs' preflight takes a durable capacity claim)
++
++    store = Store(str(tmp_path / "prepared.sqlite3"))
++    service = WorkersProjectsService(store, HostRuntime(), reconcile_on_startup=False,
++                                     start_background_consumers=False)
++    project = store.create_project("owner-a", "Prepared", "Accept work while the host is held", "claude-code")
++
++    def worker(name: str, **kwargs) -> dict:
++        return service.create_worker(project_id=project["project_id"], owner_id="owner-a", name=name, role="worker",
++                                     profile="claude-code", backend="", execution_mode="host", **kwargs)
++
++    try:
++        holder = worker("Manual mission")
++        held_run = store.create_run(holder["worker_id"], project["project_id"], "Synthetic manual work")
++        held_run = store.claim_next_queued_run(holder["worker_id"]) or held_run
++        store.update_worker_state(holder["worker_id"], "running")
++        assert service._acquire_host_run_lease(store.get_worker(holder["worker_id"]), held_run)["mutation_scope"]
++
++        with pytest.raises(HostCapacityError) as refused:
++            worker("Started at once")
++        assert refused.value.capacity_class == held_by
++
++        prepared = worker("Prepared", start_synchronously=False)
++        assert prepared["state"] == "paused"
++        run = service.assign_run(prepared["worker_id"], "Synthetic later work", start_processor=False)
++        assert run["state"] == "queued"
++        with pytest.raises(HostCapacityError) as waiting:
++            service._acquire_host_run_lease(store.get_worker(prepared["worker_id"]), run)
++        assert waiting.value.capacity_class == held_by
++
++        service._release_host_run_lease(held_run["run_id"], reason="run_terminal")
++        assert service._acquire_host_run_lease(store.get_worker(prepared["worker_id"]), run)
++    finally:
++        service.shutdown()
++
++
+ @pytest.mark.parametrize(
+     ("failure_class", "error"),
+     [

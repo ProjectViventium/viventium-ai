@@ -1,0 +1,12 @@
+[project]
+name = "viventium-experimental-tts"
+version = "0.1.0"
+description = "Local Chatterbox Turbo (MLX) behind mlx-audio's own OpenAI-compatible server"
+requires-python = ">=3.12,<3.14"
+dependencies = ["mlx-audio[tts,server]==0.6.4", "webrtcvad-wheels==2.0.14.post1"]
+
+[tool.uv]
+package = false
+# mlx-audio imports the same webrtcvad module; use its maintained binary distribution.
+exclude-dependencies = ["webrtcvad"]
+no-build = true

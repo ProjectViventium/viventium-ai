@@ -1,0 +1,702 @@
+/* Live: her brain as it ran. Always dark (a lit signal reads only on graphite), in the settings page's language:
+   cool neutrals, Inter Tight, no outlines, no warm fill. The only colours are the
+   regions' own (cool hues, white for the mind), Feelings' band colours, and two states: a backup taken, a failure.
+   Every colour is a token in the first block. */
+
+.vlx {
+  --vlx-bg: #0a0b0e;
+  --vlx-text: #f7f3ec;
+  --vlx-soft: #b8bbc2;
+  --vlx-quiet: #8b8f97;
+  --vlx-faint: rgb(255 255 255 / 0.22);
+  --vlx-line: rgb(255 255 255 / 0.055);
+  --vlx-tone: rgb(255 255 255 / 0.03);
+  --vlx-tone-2: rgb(255 255 255 / 0.06);
+  --vlx-edge: rgb(255 255 255 / 0.07);
+  --vlx-glass: rgb(16 18 23 / 0.72);
+  --vlx-shadow: rgb(0 0 0 / 0.45);
+  --vlx-live: #7dd3fc;
+  --vlx-button: #f5f6f8;
+  --vlx-button-ink: #0a0b0e;
+  --vlx-warn: #f0abfc; /* (a backup taken: brain.ts COLORS.warn) */
+  --vlx-error: #ed9187; /* (a failure: the settings page's own "low") */
+
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 26px clamp(16px, 3vw, 40px) 36px;
+  background: var(--vlx-bg);
+  color: var(--vlx-text);
+  color-scheme: dark;
+}
+
+.vlx-top,
+.vlx-body {
+  width: 100%;
+  max-width: 1640px;
+  margin: 0 auto;
+}
+.vlx-top {
+  display: grid;
+  gap: 10px;
+}
+.vlx-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  min-height: 32px;
+  font-size: 13.5px;
+  color: var(--vlx-soft);
+  transition: color var(--respond) var(--ease);
+}
+.vlx-back:hover {
+  color: var(--vlx-text);
+}
+.vlx-back svg {
+  width: 15px;
+  height: 15px;
+}
+.vlx-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 18px;
+}
+.vlx-title {
+  font-size: 34px;
+  font-weight: 620;
+  letter-spacing: -0.036em;
+  line-height: 1.1;
+}
+.vlx-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--vlx-soft);
+}
+.vlx-state i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--vlx-faint);
+}
+.vlx-state[data-on='true'] i {
+  background: var(--vlx-live);
+  animation: vlx-beat 2.4s var(--ease) infinite;
+}
+.vlx-lede {
+  max-width: 76ch;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--vlx-soft);
+}
+
+.vlx-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: 18px;
+  align-items: start;
+}
+
+/* The stage: the brain, its labels, the dialogue on show, what a region did. */
+.vlx-stage {
+  position: relative;
+  height: clamp(520px, 76vh, 880px);
+  border-radius: 28px;
+  overflow: hidden;
+  isolation: isolate;
+  background: var(--vlx-bg);
+  box-shadow:
+    inset 0 1px 0 var(--vlx-edge),
+    0 30px 80px var(--vlx-shadow);
+}
+.vlx-stage canvas {
+  display: block;
+  touch-action: none;
+}
+.vlx-stage[data-pointing='true'] {
+  cursor: pointer;
+}
+/* (the dark draws in at the edges: the brain sits in its own light) */
+.vlx-stage::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse 75% 70% at 50% 46%, transparent 55%, rgb(5 6 8 / 0.55) 100%);
+}
+.vlx-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+/* A region's name is a button a key opens; a pointer or a finger goes through it to the stage, which finds the region
+   (page.tsx, under). No box, no outline. */
+.vlx-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  padding: 0;
+  translate: -50% 7px;
+  white-space: nowrap;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-shadow:
+    0 0 2px rgb(0 0 0 / 0.85),
+    0 1px 10px rgb(0 0 0 / 0.9);
+  transition: opacity var(--respond) var(--ease);
+}
+.vlx-label:focus-visible {
+  outline: none;
+}
+.vlx-label:focus-visible b {
+  text-decoration: underline 1px var(--vlx-faint);
+  text-underline-offset: 4px;
+}
+.vlx-label b {
+  font-size: 13px;
+  font-weight: 590;
+  letter-spacing: -0.005em;
+  color: var(--vlx-text);
+  transition:
+    color var(--respond) var(--ease),
+    text-shadow var(--settle) var(--ease);
+}
+/* Lit with its region: the name glows in the region's own colour while the light lasts. */
+.vlx-label[data-lit] b {
+  color: #fff;
+  text-shadow:
+    0 0 2px rgb(0 0 0 / 0.9),
+    0 0 6px rgb(0 0 0 / 0.6),
+    0 0 18px var(--glow);
+}
+.vlx-label[data-lit='quiet'] b {
+  text-shadow:
+    0 0 2px rgb(0 0 0 / 0.9),
+    0 0 12px var(--vlx-faint);
+}
+.vlx-label[data-lit='warn'] b {
+  --glow: var(--vlx-warn);
+}
+.vlx-label[data-lit='error'] b {
+  --glow: var(--vlx-error);
+}
+.vlx-label small {
+  font-size: 11px;
+  color: var(--vlx-quiet);
+}
+.vlx-label[data-core='false'] b {
+  font-size: 12px; /* (a cortex's name: second to the parts every turn travels through) */
+}
+.vlx-label[data-core='false'] small {
+  display: none; /* (a cortex switched off keeps its name, dark: a dot with no name said nothing) */
+}
+.vlx-label[data-core='false'][data-focus='true'] small {
+  display: grid;
+}
+/* Too small for every name (a narrow window: brain.ts, crowded): the parts every turn takes keep their names; a
+   cortex's shows when you point at it, and second lines are left to the card that opens. Hidden, not removed: their
+   size is still read. */
+.vlx-labels[data-tight='true'] .vlx-label[data-core='false']:not([data-focus='true']),
+.vlx-labels[data-tight='true'] .vlx-label small {
+  visibility: hidden;
+}
+
+.vlx-words,
+.vlx-reply {
+  position: absolute;
+  left: 26px;
+  z-index: 2;
+  display: grid;
+  gap: 5px;
+  max-width: min(430px, 42%);
+  pointer-events: none;
+  animation: vlx-in var(--reveal) var(--ease) both;
+}
+.vlx-words {
+  top: 24px;
+}
+.vlx-reply {
+  bottom: 58px;
+}
+.vlx-who {
+  font-size: 11.5px;
+  font-weight: 620;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vlx-quiet);
+}
+.vlx-words p,
+.vlx-reply p {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+  text-shadow: 0 1px 14px rgb(0 0 0 / 0.9);
+}
+.vlx-words p {
+  font-size: 19px;
+  font-weight: 520;
+  line-height: 1.35;
+  letter-spacing: -0.012em;
+}
+.vlx-reply p {
+  font-size: 15.5px;
+  line-height: 1.45;
+  color: var(--vlx-soft);
+}
+
+.vlx-card {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 3;
+  display: grid;
+  gap: 3px;
+  width: min(330px, calc(100% - 36px));
+  max-height: calc(100% - 36px);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 16px 18px 18px;
+  border-radius: 20px;
+  background: var(--vlx-glass);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  box-shadow:
+    inset 0 1px 0 var(--vlx-edge),
+    0 20px 50px var(--vlx-shadow);
+  animation: vlx-in var(--respond) var(--ease) both;
+}
+.vlx-card h2 {
+  font-size: 18px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+}
+.vlx-dot {
+  width: 9px;
+  height: 9px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+}
+.vlx-part {
+  font-size: 12.5px;
+  color: var(--vlx-quiet);
+}
+.vlx-cap {
+  margin-top: 10px;
+  font-size: 11.5px;
+  font-weight: 620;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--vlx-quiet);
+}
+.vlx-last {
+  font-size: 14px;
+  line-height: 1.45;
+}
+.vlx-last em {
+  font-style: normal;
+  color: var(--vlx-quiet);
+}
+.vlx-strip {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  align-items: end;
+  gap: 3px;
+  min-height: 28px;
+  margin-top: 5px;
+}
+.vlx-strip i {
+  height: 16px;
+  transform-origin: bottom;
+  border-radius: 3px;
+  background: var(--vlx-faint);
+  opacity: 0.88;
+  transition:
+    opacity var(--respond) var(--ease),
+    transform var(--respond) var(--ease);
+}
+.vlx-strip i:hover {
+  opacity: 1;
+  transform: scaleY(1.18);
+}
+.vlx-full {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--vlx-tone-2);
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--vlx-text);
+}
+.vlx-history {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+.vlx-history li {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--vlx-soft);
+}
+.vlx-history li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vlx-history li small,
+.vlx-step-when small {
+  display: block;
+  color: var(--vlx-quiet);
+  font-size: 11px;
+}
+.vlx-history li em {
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--vlx-quiet);
+}
+.vlx-history li i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--vlx-faint);
+}
+.vlx-none {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--vlx-quiet);
+}
+/* The plain view, standing in for the 3D one, and the line that says why. */
+.vlx-plain {
+  position: absolute;
+  inset: 0;
+}
+.vlx-plain[data-over='true'] {
+  background: var(--vlx-bg);
+}
+.vlx-plain-note {
+  position: absolute;
+  right: 22px;
+  bottom: 20px;
+  z-index: 2;
+  max-width: min(360px, 60%);
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: right;
+  color: var(--vlx-soft);
+  pointer-events: none;
+}
+
+.vlx-legend {
+  position: absolute;
+  left: 26px;
+  bottom: 20px;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+  color: var(--vlx-quiet);
+  pointer-events: none;
+}
+.vlx-legend i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+.vlx-legend i[data-quiet='true'] {
+  background: var(--vlx-faint);
+}
+
+/* The flat drawing: the same brain without WebGL, still when reduced motion is asked for. */
+.vlx-flat {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.vlx-flat-wire {
+  fill: none;
+  stroke: rgb(154 164 181 / 0.24);
+  stroke-width: 1.2;
+}
+.vlx-flat-wire[data-dim='true'] {
+  stroke: rgb(154 164 181 / 0.08);
+}
+.vlx-flat-node > circle:first-child {
+  opacity: 0.32;
+  transition: opacity var(--respond) var(--ease);
+}
+.vlx-flat-node[data-runs='false'] > circle:first-child {
+  opacity: 0.1;
+}
+.vlx-flat-node[data-hover='true'] > circle:first-child {
+  opacity: 0.55;
+}
+.vlx-flat-glow {
+  pointer-events: none;
+  filter: drop-shadow(0 0 10px currentColor);
+  animation: vlx-glow 1.8s var(--ease) both;
+}
+.vlx-flat[data-still='true'] .vlx-flat-glow {
+  animation: none;
+  opacity: 0.7;
+}
+
+/* The turns: newest first; the one on show opens into its steps, lit as they are shown. */
+.vlx-talk {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: clamp(520px, 76vh, 880px);
+  padding: 18px 8px 10px 16px;
+  border-radius: 28px;
+  background: var(--vlx-tone);
+  box-shadow: inset 0 1px 0 var(--vlx-line);
+}
+.vlx-talk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 32px;
+  margin: 0 8px 8px 4px;
+}
+.vlx-talk-head h2 {
+  font-size: 18px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+}
+.vlx-talk-do {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vlx-follow {
+  padding: 6px 13px;
+  border-radius: 999px;
+  background: var(--vlx-button);
+  color: var(--vlx-button-ink);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition: transform var(--respond) var(--ease);
+}
+.vlx-follow:hover {
+  transform: translateY(-1px);
+}
+.vlx-again {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--vlx-tone-2);
+  color: var(--vlx-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  transition:
+    background var(--respond) var(--ease),
+    transform var(--respond) var(--ease);
+}
+.vlx-again:hover {
+  background: rgb(255 255 255 / 0.1);
+  transform: translateY(-1px);
+}
+.vlx-again svg {
+  width: 13px;
+  height: 13px;
+}
+.vlx-turns {
+  display: grid;
+  gap: 3px;
+  padding-right: 8px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--vlx-faint) transparent;
+}
+.vlx-turn {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  text-align: left;
+  transition: background var(--respond) var(--ease);
+}
+.vlx-turn:hover {
+  background: var(--vlx-tone);
+}
+.vlx-turns > li[data-on='true'] > .vlx-turn {
+  background: var(--vlx-tone-2);
+  box-shadow: inset 0 1px 0 var(--vlx-line);
+}
+.vlx-turn-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--vlx-quiet);
+}
+.vlx-turn-head svg {
+  width: 13px;
+  height: 13px;
+}
+.vlx-turn-words,
+.vlx-turn-reply {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.vlx-turn-words {
+  font-size: 14px;
+  line-height: 1.4;
+}
+.vlx-turn-reply {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--vlx-soft);
+}
+.vlx-steps {
+  display: grid;
+  gap: 3px;
+  padding: 6px 6px 12px 14px;
+}
+.vlx-steps li {
+  display: grid;
+  grid-template-columns: 8px 96px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--vlx-quiet);
+  opacity: 0.4;
+  transition: opacity var(--respond) var(--ease);
+}
+.vlx-steps li[data-done='true'] {
+  opacity: 1;
+}
+.vlx-steps li[data-now='true'] .vlx-step-what {
+  color: var(--vlx-text);
+}
+.vlx-steps li i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.vlx-steps li i[data-state='quiet'] {
+  background: var(--vlx-faint) !important;
+}
+.vlx-step-where {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vlx-soft);
+}
+.vlx-step-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vlx-step-what[data-detail='true'] {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.vlx-step-when {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.vlx-late {
+  color: var(--vlx-soft);
+  font-weight: 500;
+}
+
+@keyframes vlx-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes vlx-beat {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(125 211 252 / 0.45);
+  }
+  60% {
+    box-shadow: 0 0 0 7px rgb(125 211 252 / 0);
+  }
+}
+@keyframes vlx-glow {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@media (max-width: 1100px) {
+  .vlx-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .vlx-talk {
+    max-height: none;
+  }
+}
+@media (max-width: 640px) {
+  .vlx-stage {
+    height: 560px;
+    border-radius: 22px;
+  }
+  .vlx-words,
+  .vlx-reply {
+    left: 16px;
+    max-width: calc(100% - 32px);
+  }
+  .vlx-words p {
+    font-size: 16px;
+  }
+  /* (a compact sheet at the bottom: the brain above it stays in reach of a finger) */
+  .vlx-card {
+    top: auto;
+    bottom: 12px;
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-height: 38%;
+  }
+  .vlx-legend {
+    display: none;
+  }
+  .vlx-plain-note {
+    right: 16px;
+    left: 16px;
+    max-width: none;
+    text-align: center;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vlx *,
+  .vlx *::before {
+    animation: none !important;
+    transition: none !important;
+  }
+}

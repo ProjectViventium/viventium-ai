@@ -1,0 +1,71 @@
+{
+ "voice": "xai-eve",
+ "checked_by": "MIT/ast-finetuned-audioset-10-10-0.4593",
+ "rule": "sound score >= 0.45 and speech < 0.3, as the clip is played",
+ "clips": {
+  "laugh-1": {
+   "score": 0.772,
+   "seconds": 2.02
+  },
+  "laugh-2": {
+   "score": 0.768,
+   "seconds": 2.77
+  },
+  "laugh-3": {
+   "score": 0.765,
+   "seconds": 1.48
+  },
+  "laugh-4": {
+   "score": 0.758,
+   "seconds": 1.33
+  },
+  "laugh-5": {
+   "score": 0.735,
+   "seconds": 2.07
+  },
+  "laugh-6": {
+   "score": 0.735,
+   "seconds": 2.34
+  },
+  "sigh-1": {
+   "score": 0.897,
+   "seconds": 0.81
+  },
+  "sigh-2": {
+   "score": 0.881,
+   "seconds": 0.87
+  },
+  "sigh-3": {
+   "score": 0.879,
+   "seconds": 0.85
+  },
+  "sigh-4": {
+   "score": 0.871,
+   "seconds": 0.69
+  },
+  "sigh-5": {
+   "score": 0.87,
+   "seconds": 0.72
+  },
+  "sigh-6": {
+   "score": 0.87,
+   "seconds": 0.79
+  },
+  "chuckle-1": {
+   "score": 0.758,
+   "seconds": 1.33,
+   "from": "laugh-4"
+  },
+  "chuckle-2": {
+   "score": 0.765,
+   "seconds": 1.48,
+   "from": "laugh-3"
+  },
+  "chuckle-3": {
+   "score": 0.772,
+   "seconds": 2.02,
+   "from": "laugh-1"
+  }
+ },
+ "chuckle": "a chuckle plays one of her three shortest laughs: the voice's own [chuckle] was not heard (0 of 24 Chatterbox renderings, 0 of 6 xAI)"
+}
