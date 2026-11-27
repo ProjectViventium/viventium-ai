@@ -2,6 +2,52 @@
 
 What changed for people who use Viventium AI, one entry per public release, newest first.
 
+## 0.5.0 experimental · release 55 · 27 November 2026
+
+- Viventium's marker for "start a new message here" no longer shows up in your messages. It was split only when it
+  stood on its own line, or mid-line with spaces around it on some minds; written glued to the next word it reached
+  you as text. Now, outside code and quotes, it starts a new message wherever it stands, on every mind, and is never
+  spoken or kept in her history. Checked without a model on three kinds of mind, on real replies where it showed and
+  on made-up ones: it never remains (before, the glued ones kept it); in code, quotes or written escaped it stays.
+- Each tool Viventium uses while answering on Telegram is now kept in her own log, with when it started and ended,
+  as on calls, so a reply that went wrong can be looked into afterwards.
+- When you ask about something Viventium found for you before, Deep memory now searches each of your recent messages on
+  its own. Before, it searched them as one, and older messages could push what you asked about out of the few
+  passages it keeps. Checked without a model, on a real request and its memory: the earlier find moved from just
+  outside what Deep memory keeps (sixth, with five kept) to second.
+- Deep memory now hands Viventium only what its search found, naming where each find comes from; a thought that names
+  none of them is dropped. A search that missed something no longer turns into "that was not found, start fresh".
+  Checked on Grok on your subscription, old against new, on that request five times: such a thought 0 times (2 of 5
+  before), work started every time as before, and the time to the first words about the same.
+- When the search by meaning cannot run (its server too slow or not running, or no index yet), Viventium is told the
+  search could not run, never that nothing was there, and recall gives the real reason.
+- The first message after a long quiet spell keeps its search by meaning: the request is no longer cut off at 0.15
+  seconds (a server waking from idle can take a few tenths of a second), and Viventium waits up to 0.8 seconds for it.
+  A warm server answers in tens of milliseconds, so other turns are unchanged.
+- When the hand-off check judges a message an answer but Viventium's reply still says work is under way, it now says
+  "I didn't start the background job." and keeps your request for its next turn, as it already did when the check gave
+  no verdict. Checked on Grok on your subscription: ten everyday messages, no false correction, and first words about as
+  fast as before.
+- Known limit: Deep memory now finds an earlier list like this one, but it may be shown the part of it that sets out
+  the request rather than the part that names the places, so Viventium may still not name them.
+
+## 0.5.0 experimental · release 54 · 27 November 2026
+
+- On a call in Listen only, or in Wing when Viventium takes your words as meant for someone else, the page now says so
+  the moment she hears you: one line under the mode switch, with a Talk button. One tap and she answers from then on,
+  and Talk is kept for your next call. The mode you choose is still kept between calls; before, a mode chosen in an
+  earlier call could leave a call silent with nothing on the screen to say why.
+- For a typed or Telegram message, when your chosen mind takes the request and then gives no word in its time, it is
+  asked once more, fresh, and the backup is asked alongside; the backup's words wait up to 12 seconds for that fresh
+  answer. If your chosen mind answers, you get its words and no notice about a backup; if not, the backup answers with
+  the notice as before, at most 12 seconds later than before. A spoken call keeps today's timing. Checked on stand-in
+  minds, old against new, with the shapes of real messages: a hung request answered by the chosen mind 3 of 3 (before:
+  the backup, 3 of 3).
+- When Viventium restarts, each part's log from its last run is kept (the last five), instead of being emptied, so a
+  problem can still be looked into afterwards.
+- `./vx test-telegram` refuses to run while Viventium is running: it would have stopped her and answered its test
+  messages in your own Telegram chat.
+
 ## 0.5.0 experimental · release 53 · 26 November 2026
 
 - When your chosen mind gives no word in its time and the backup on your Mac is asked instead, the backup now has a

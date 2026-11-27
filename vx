@@ -675,6 +675,14 @@ mine() {  # mine FILE...: a file of hers that vx itself writes, his alone before
   # closes what is left open at the next start; the part being started keeps the permissions a login gives it)
   local file; for file in "$@"; do (umask 077; : >>"$file"); chmod go-rwx "$file" 2>/dev/null || true; done
 }
+keep_log() {  # keep_log FILE: a part's log from its last run, kept as FILE.1 (FILE.2 to FILE.5 before it) when the part
+  # starts again, never emptied: what went wrong before a restart can still be read after it. Moved, so it keeps its
+  # permissions; an empty one is left as it is.
+  local file=$1 n
+  [ -s "$file" ] || return 0
+  for n in 4 3 2 1; do [ -f "$file.$n" ] && mv -f "$file.$n" "$file.$((n + 1))"; done
+  mv -f "$file" "$file.1"
+}
 launched() {  # launched PID NAME COMMAND...: the record, written as it starts
   local pid=$1 name=$2 word program="" record temp; shift 2
   for word in "$@"; do  # (the program: the first word that is not env, nor a VAR=value env sets)
@@ -746,6 +754,7 @@ start() {  # start NAME PORT COMMAND...  (background, own process group, log + p
     if [ ! -f "$LOGS/$name.how" ] || [ "$(cat "$LOGS/$name.how")" = "$how" ]; then echo "  $name: already running"; return; fi
     echo "  $name: its settings changed"; if [ "$name" = doors ]; then stop_doors; else stop "$name" "${port#-}"; fi
   fi
+  keep_log "$LOGS/$name.log"  # (its last run's log kept, then a fresh one for this run)
   mine "$LOGS/$name.how" "$LOGS/$name.log" "$LOGS/$name.pid"  # (her part's own files: his alone from the start)
   echo "$how" >"$LOGS/$name.how"
   local launch_source launch_build="" launch_build_source=""
@@ -1207,6 +1216,11 @@ test_life() {  # test_life SCRIPT [ARGS]: the agent on a fresh copy of the synth
   # (conversation, jobs, schedules, Feelings), so test calls never land in yours, and Telegram paused (it
   # would adopt test Workers). Your own Life, state and Telegram come back afterwards, whatever happens.
   local life="$LOGS/tests/life" state="$LOGS/tests/state"
+  # Never while she is running: the run stopped her agent and Telegram, started her agent on a test state and answered
+  # its scripted messages in her owner's own chat. A test needs a Viventium of its own (the bench, a test Mac).
+  if running agent || running chat; then
+    echo "Viventium is running here: this test would stop her and answer in your own Telegram chat. Run it on a test Mac."; exit 1
+  fi
   # Never under a call of yours: the run swaps her agent for one on a test state, and your call would land there.
   # A call touches state/core/call-live every 20 s (call/agent.py).
   local live="$ROOT/state/core/call-live"
@@ -1228,14 +1242,14 @@ test_life() {  # test_life SCRIPT [ARGS]: the agent on a fresh copy of the synth
   rm -rf "$life" "$state"; mkdir -p "$state/core"; cp -R "$ROOT/tests/fixtures/life" "$life"
   cp "$ROOT/state/core/telegram.json" "$state/core/" 2>/dev/null || true  # the owner's chat, for test-telegram
   shared record
-  trap 'shared check; stop agent; : > "$LOGS/agent.log"; VX_NO_OPEN=1 up "$PROFILE" | grep -E "agent|chat|Ready|!!|was:|now:|chmod"; rm -rf "$LOGS/tests.lock"' EXIT
+  trap 'shared check; stop agent; keep_log "$LOGS/agent.log"; VX_NO_OPEN=1 up "$PROFILE" | grep -E "agent|chat|Ready|!!|was:|now:|chmod"; rm -rf "$LOGS/tests.lock"' EXIT
   # (VX_TEST_ENV: a fault to test a backup, e.g. "XAI_API_KEY=broken" so her cloud voice cannot be reached)
   # The synthetic Life is findable by meaning, like yours (its own small index, in the test state).
   LIFE="$life" VX_STATE="$state" "$ROOT/.venv/bin/python" -m core.memory refresh >/dev/null 2>&1 || true
   # Its turns go to its own log, never yours: the Live view of the Subconscious page reads yours (else test turns
   # fill it, a test's question showing as the newest turn).
   local turns="$LOGS/tests/turns.jsonl"; : > "$turns"
-  stop chat; stop agent; : > "$LOGS/agent.log"; start_agent LIFE="$life" VX_STATE="$state" VX_TURNS="$turns" ${VX_TEST_ENV:-}; wait_agent
+  stop chat; stop agent; keep_log "$LOGS/agent.log"; start_agent LIFE="$life" VX_STATE="$state" VX_TURNS="$turns" ${VX_TEST_ENV:-}; wait_agent
   # The test process gets the same synthetic Life and state (test-telegram runs a Queen itself), and
   # only test-telegram gets the keys it needs (start_agent unloads them).
   if [ "${TEST_TELEGRAM:-}" = 1 ]; then load_keys; telegram_token; fi
@@ -2545,7 +2559,7 @@ case "${1:-}" in
     (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.doctor --reconnect) ;;
   doctor) doctor ;;
   agent-again) shift; load_profile "$(cat "$LOGS/profile" 2>/dev/null || echo local)" check  # (tests: her agent restarts as
-    stop agent; : > "$LOGS/agent.log"; start_agent "$@" ;;                                    # given, and nobody waits for it)
+    stop agent; keep_log "$LOGS/agent.log"; start_agent "$@" ;;                                    # given, and nobody waits for it)
   settings) shift
     if restore_pending; then
       (cd "$ROOT" && "$ROOT/.venv/bin/python" -m core.backup status)

@@ -41,7 +41,7 @@ from brain import prompts as ledger  # noqa: E402
 from brain.queen import MIND_FAILED, Queen, Workers, _spoke, code_pieces, drafts, mind_silent_words, put_in_chat, queen_llm, speakable, unbroken, voice_only, written_call  # noqa: E402
 from core import attachments, brain_trace, clock, jobs, life, relationship, schedules, state  # noqa: E402
 from core import live as conversation  # noqa: E402
-from core import page_sound  # noqa: E402
+from core import page_sound, tooltrace  # noqa: E402
 from core.downloads import voice_notice  # noqa: E402
 from core.offloop import OrderedIO  # noqa: E402
 from speech import live as live_voice  # noqa: E402
@@ -490,19 +490,7 @@ async def call(ctx: JobContext) -> None:
             # (Her Feelings react to their words in her Subconscious' round, once her answer is out: Emotional
             # reaction, brain/rounds.py, on its card's place.)
 
-    @session.on("function_tools_executed")
-    def _on_tools(ev) -> None:
-        for call_, output in ev.zipped():
-            note("tool", name=call_.name, call_id=call_.call_id, args=call_.arguments,
-                 output=getattr(output, "output", None))
-
-    @session.on("tool_execution_updated")
-    def _on_tool_update(ev) -> None:  # started / progress (silent or spoken) / ended / reply status
-        update = ev.update
-        fields = update.model_dump(mode="json", exclude={"function_call"})
-        if getattr(update, "function_call", None) is not None:
-            fields["name"], fields["call_id"] = update.function_call.name, update.function_call.call_id
-        note("tool_event", update=type(update).__name__, **fields)
+    tooltrace.follow(session, note)  # (her tool calls in her turn log, as on every channel: core/tooltrace.py)
 
     @session.on("speech_created")
     def _on_speech(ev) -> None:  # every reply, with its source; the analyzer links turns to it
@@ -724,6 +712,12 @@ async def call(ctx: JobContext) -> None:
         await ctx.room.local_participant.send_text(text, topic="lk.chat", attributes={"viv.approval.code": code})
         note("shown", text=text)
     queen.approval_settled = approval_settled
+
+    async def quiet_heard(mode: str, turn_id: str) -> None:  # (heard, and kept quiet by the call's mode: the page shows
+        # one line saying so, with one tap to Talk: call-mode.tsx; the mode and the turn, never the words)
+        await ctx.room.local_participant.send_text(json.dumps({"mode": mode, "turn": turn_id}), topic="viv.quiet")
+        note("quiet_told", mode=mode)
+    queen.quiet_heard = quiet_heard
 
     async def typed(sess: AgentSession, words: ChatMessage, sender: str) -> None:  # typed on the page, while talking or not
         alive()                                                       # same per-turn notes as speech (LiveKit's own default, plus prepare)

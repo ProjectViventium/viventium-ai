@@ -40,7 +40,9 @@ import secrets
 import sqlite3
 import subprocess
 import threading
+import socket
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -65,7 +67,11 @@ ASK = ("Instruct: Given what was just said in a conversation, retrieve the user'
        "conversations that bear on it\nQuery: ")  # (this model family expects the task with the query)
 CHUNK, MAX_FILE, BATCH = 900, 1_000_000, 32
 QUERY = 6000  # characters searched as one (about 1,500 tokens; its server reads 8,192, vx serve_embed): longer, in parts
-TURN_WAIT = 0.15    # seconds the per-turn recall waits for the meaning search; later than this, words only
+# Seconds her turn waits for the per-turn search by meaning; later than this, words only. A warm server answers in tens
+# of milliseconds, so the wait ends as soon as it does: the bound binds only on a server waking from idle, which can
+# take a few tenths of a second. At 0.15 s, the first message after a long quiet spell lost its meaning half.
+TURN_WAIT = float(os.environ.get("MEMORY_TURN_WAIT", "0.8"))
+TURN_ASK = 5.0  # seconds the per-turn request itself may take: never hung up at her turn's wait (it finishes, warm)
 MEANING_ROOM = 400  # characters of a passage found by meaning in her search (its section and corrections kept whole)
 NEAR = float(os.environ.get("MEMORY_NEAR", "0.60"))        # per turn: how alike a passage must be to be shown
 DEEP_NEAR = float(os.environ.get("MEMORY_DEEP_NEAR", "0.40"))  # Deep Memory: candidates; a model then weighs them
@@ -74,7 +80,8 @@ _loaded: tuple | None = None  # (index mtime, matrix, rows)
 
 
 def embed(texts: list[str], timeout: float = 120.0) -> np.ndarray:
-    """Unit vectors for these texts from the local embedding model."""
+    """Unit vectors for these texts from the local embedding model. Raises when it does not answer (why_not says why
+    in words)."""
     body = json.dumps({"model": EMBED_MODEL, "input": texts, "keep_alive": -1}).encode()
     request = urllib.request.Request(EMBED_URL + "/api/embed", data=body, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=timeout) as reply:
@@ -235,7 +242,29 @@ def _index() -> tuple[np.ndarray, list[tuple[str, int, str]]]:
     return _loaded[1], _loaded[2]
 
 
-_away = {"why": ""}  # why the search by meaning last gave nothing it could have given (recall says so)
+class Near(list):
+    """What a search by meaning found, best first, and whether it could search at all: `answered` False means it could
+    not (`why` says why, in words), so an empty result is never read as "nothing there". Each call has its own: two
+    searches at once never share a reason."""
+
+    def __init__(self, hits=(), answered: bool = True, why: str = ""):
+        super().__init__(hits)
+        self.answered, self.why = answered, why
+
+
+def answered(found) -> bool:
+    """Whether a search's result came from a search that ran (a plain list, as before: yes)."""
+    return getattr(found, "answered", True)
+
+
+def why_not(e: BaseException) -> str:
+    """Why the embedding server gave no vectors, in words: too slow, refused, or not there."""
+    reason = getattr(e, "reason", e)
+    if isinstance(e, urllib.error.HTTPError):
+        return f"its model refused the request ({e.code})"
+    if isinstance(reason, (socket.timeout, TimeoutError)) or isinstance(e, (socket.timeout, TimeoutError)):
+        return "it did not answer in time"
+    return "its model is not running"
 
 
 def windows(text: str) -> list[str]:
@@ -250,41 +279,36 @@ def windows(text: str) -> list[str]:
     return out + ([rest] if rest else [])
 
 
-def nearest(query: str, k: int = 6, under: tuple[str, ...] = (), timeout: float = 5.0,
-            spans: bool = False) -> list[tuple]:
+def nearest(query: str | list[str], k: int = 6, under: tuple[str, ...] = (), timeout: float = 5.0,
+            spans: bool = False) -> Near:
     """The passages closest in meaning to `query` (all of it: a long one in parts, each passage scored by the part it
-    is closest to): (how alike 0..1, file, line, text), best first, each as it stands now (core/life.current, by the
+    is closest to; a list: each of its texts so, the closest of all of them scoring a passage): (how alike 0..1, file, line, text), best first, each as it stands now (core/life.current, by the
     passages a change names; a conversation forgotten whole is not searched). `under` keeps it to files below those
     Life folders. spans: each with the last line of the file it runs to, too (a look offers the passage by its own
-    lines, never its first line alone). [] when there is no index or no embedding server (then
-    `_away["why"]` says which). One pass: the change list, her index and each summary read once for all of it (before,
+    lines, never its first line alone). Empty and not answered (Near) when there is no index or the embedding server did not answer, with why. One pass: the change list, her index and each summary read once for all of it (before,
     with line forgets carried, every passage had read them again, and the search took seconds)."""
     with life.one_pass():
         found = _nearest(query, k, under, timeout)
-    return found if spans else [hit[:4] for hit in found]
+    return found if spans else Near([hit[:4] for hit in found], found.answered, found.why)
 
 
-def _nearest(query: str, k: int, under: tuple[str, ...], timeout: float) -> list[tuple[float, str, int, str, int]]:
+def _nearest(query: str | list[str], k: int, under: tuple[str, ...], timeout: float) -> Near:
     if os.environ.get("MEMORY_EMBED") == "off":
-        return []
+        return Near(answered=False)
     matrix, rows = _index()
     if not rows:
-        _away["why"] = ("its index is being built again" if INDEX.exists() and _stale() else "no index yet") \
-            if life.life() else ""
-        return []
-    parts = windows(query)
+        return Near(answered=False, why=("its index is being built again" if INDEX.exists() and _stale() else
+                                         "no index yet") if life.life() else "")
+    parts = list(dict.fromkeys(part for text in ([query] if isinstance(query, str) else query) for part in windows(text)))
     if not parts:
-        return []
+        return Near()
     try:
         asked = np.concatenate([embed([ASK + part for part in parts[i:i + BATCH]], timeout=timeout)
                                 for i in range(0, len(parts), BATCH)])
-    except Exception:  # the server is away: the word match still answers
-        _away["why"] = "its model is not running"
-        return []
+    except Exception as e:  # noqa: BLE001 (the server did not answer: said, and the word match still answers)
+        return Near(answered=False, why=why_not(e))
     if asked.shape[1] != matrix.shape[1]:
-        _away["why"] = "its index was built by another model"
-        return []
-    _away["why"] = ""
+        return Near(answered=False, why="its index was built by another model")
     scores = (matrix @ asked.T).max(axis=1)
     if under:
         scores = np.where([path.startswith(tuple(u.rstrip("/") + "/" for u in under)) for path, _, _ in rows], scores, -1.0)
@@ -307,7 +331,7 @@ def _nearest(query: str, k: int, under: tuple[str, ...], timeout: float) -> list
         out.append((float(scores[i]), path, line, now, end))
         if len(out) == k:
             break
-    return out
+    return Near(out)
 
 
 def _passage_now(path: str, line: int, text: str) -> tuple[str, int] | None:
@@ -372,7 +396,8 @@ _turns = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-turn")  # 
 def per_turn(text: str, limit_chars: int = 700) -> tuple[str, list[str]]:
     """This turn's memory note and the files it came from: the word match (core/life.related_hits) and the
     nearest passage by meaning from the same folders, in the space the word match had alone, each saying where it
-    comes from. The meaning search gets TURN_WAIT; if it has not answered by then the turn goes on with words only.
+    comes from. Her turn waits TURN_WAIT for the meaning search; if it has not answered by then the turn goes on
+    with words only (the request itself finishes: never hung up at her wait), and the log says why.
     The whole note gets NOTE_WAIT: her reply never waits on it longer (nothing on her reply path
     waits unbounded); without it she answers from the conversation, and recall is still hers to call."""
     if limit_chars <= 0:
@@ -387,15 +412,19 @@ def per_turn(text: str, limit_chars: int = 700) -> tuple[str, list[str]]:
 
 def _per_turn(text: str, limit_chars: int) -> tuple[str, list[str]]:
     began = time.monotonic()
-    meaning = _pool.submit(nearest, text, 3, life.SEARCH_DIRS, TURN_WAIT)
+    meaning = _pool.submit(nearest, text, 3, life.SEARCH_DIRS, TURN_ASK)
     try:
         words = life.related_hits(text)
     except life.Unreadable as e:
         return life.UNREADABLE_NOTE.format(why=e)[:limit_chars], []
     try:
-        near = [hit for hit in meaning.result(timeout=max(TURN_WAIT - (time.monotonic() - began), 0.01)) if hit[0] >= NEAR]
-    except Exception:
-        near = []
+        found = meaning.result(timeout=max(TURN_WAIT - (time.monotonic() - began), 0.01))
+    except Exception as e:  # noqa: BLE001 (late, or Life unreadable: words only this turn)
+        found = Near(answered=False, why=f"it did not answer within {TURN_WAIT:g} s" if isinstance(e, TimeoutError)
+                     else f"it failed ({type(e).__name__})")
+    if not answered(found) and found.why:
+        logging.getLogger("viventium.memory").info("the per-turn search by meaning gave nothing: %s", found.why)
+    near = [hit for hit in found if hit[0] >= NEAR]
     selected = list(words[:2])
     fresh = [hit for hit in near if hit[1] not in {path for path, _ in selected}]
     room = max(0, (limit_chars - 2) // 2)
@@ -416,21 +445,32 @@ def related(text: str, limit_chars: int = 700) -> str:
     return per_turn(text, limit_chars)[0]
 
 
-def deep(talk: list[tuple[str, str]], seen: tuple[str, ...] = (), limit: int = 5, each: int = 900) -> list[dict]:
-    """Deep Memory's candidates: what in Life is nearest in meaning to the last few turns (role, words), whole (a
-    long one is searched in parts: nearest), beyond the files she was already shown. Up to `limit` passages, the
+def deep(talk: list[tuple[str, str]], seen: tuple[str, ...] = (), limit: int = 5, each: int = 900) -> Near:
+    """Deep Memory's candidates: what in Life is nearest in meaning to the last few turns (role, words), each message
+    on its own (talk_parts; a long one in parts: nearest), beyond the files she was already shown. Up to `limit` passages, the
     closest first, one per file, each starting with where it comes from and when. Candidates only: the cortex decides
-    which of them bear on the talk. One pass, as nearest."""
+    which of them bear on the talk. Not answered (Near) when its search could not run, with why: never "nothing
+    found". One pass, as nearest."""
     with life.one_pass():
         return _deep(talk, seen, limit, each)
 
 
-def _deep(talk: list[tuple[str, str]], seen: tuple[str, ...], limit: int, each: int) -> list[dict]:
+def talk_parts(talk: list[tuple[str, str]]) -> list[str]:
+    """What Deep memory searches with: each of the last four messages on its own (a long one in parts: nearest), the
+    closest of them scoring a passage. Joined into one query, older messages can outweigh the newest words: on a real
+    request the earlier find came sixth of the five passages kept, and second with each message on its own. (Each line
+    on its own as well ranked it second too, but asked the embedding server for twice the text: on a slower Mac, past
+    its wait.)"""
+    return list(dict.fromkeys(words.strip() for _, words in talk[-4:] if words.strip()))
+
+
+def _deep(talk: list[tuple[str, str]], seen: tuple[str, ...], limit: int, each: int) -> Near:
     try:  # (the talk comes from her conversation as it stands: by row, where it is kept; never by its words here)
-        near = nearest("\n".join(f"{'Viventium' if role == 'assistant' else 'User'}: {words}"
-                                  for role, words in talk[-4:] if words.strip()), k=12)
-    except life.Unreadable:
-        return []
+        near = nearest(talk_parts(talk), k=12)
+    except life.Unreadable as e:
+        return Near(answered=False, why=f"Life could not be read ({e})")
+    if not near.answered:
+        return Near(answered=False, why=near.why)
     found, files = [], set(seen)
     for score, path, line, text in near:
         if score < DEEP_NEAR or path in files:
@@ -446,7 +486,7 @@ def _deep(talk: list[tuple[str, str]], seen: tuple[str, ...], limit: int, each: 
                       "text": f"({where}) " + body, "score": round(score, 3)})
         if len(found) == limit:
             break
-    return found
+    return Near(found)
 
 
 def search(words: str, only: tuple[str, ...] = ()) -> str:
@@ -469,10 +509,11 @@ def _search(words: str, within: tuple[str, ...]) -> str:
     try:
         hits, matched = life.search_hits(words, only=within, issues=issues)
         seen = {hit["path"] for hit in hits}
-        near = [hit for hit in nearest(words, k=6, under=within, timeout=2.0) if hit[1] not in seen][:3]
+        meaning = nearest(words, k=6, under=within, timeout=2.0)
+        near = [hit for hit in meaning if hit[1] not in seen][:3]
     except life.Unreadable as e:
         return life.UNREADABLE_NOTE.format(why=e)
-    why = _away["why"]
+    why = "" if answered(meaning) else getattr(meaning, "why", "")
     # Explicit recall has no caller's character limit: reserve enough room for
     # every source and its complete correction, unlike the automatic turn note.
     room = max(1800, sum(len(f"[{h['name']}] {h['source']}\n") +

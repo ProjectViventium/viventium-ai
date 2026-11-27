@@ -261,6 +261,33 @@ _MIND_ATTEMPT: contextvars.ContextVar = contextvars.ContextVar("mind_attempt", d
 # switch is progress, never counted against the mind after it (before: a step gave up at 30 s from its start
 # while her backup, asked at 15 s, was still loading its model, and she answered nothing).
 _STEP: contextvars.ContextVar = contextvars.ContextVar("mind_step", default=None)
+# Nobody is waiting in silence for this request: {"wait": seconds, "later": bool, "answered_by": filled in}. Unset
+# (anything no caller marked, every reply to the person's own words included): her minds' timing as before. Set,
+# her chosen mind is waited for up to `wait` once its provider has taken the request (as when it stands alone).
+# later=False: while her chosen mind is in place it is asked alone, waited `wait`, never handed to a later mind
+# inside this request, and a miss does not set it aside; while the backup answers the person's turns, the backup
+# is asked. Callers mark their own requests with nobody_waiting() (a request made directly) or
+# reply_nobody_waits() (a reply made with generate_reply).
+_WAITING: contextvars.ContextVar = contextvars.ContextVar("nobody_waiting", default=None)
+
+
+@contextlib.contextmanager
+def nobody_waiting(wait: float, *, later: bool = True):
+    """Requests made inside are marked: nobody waits in silence (_WAITING). Yields the mark: after the request, its
+    `answered_by` names the mind that answered ({"provider", "model"}), or None."""
+    mark = {"wait": float(wait), "later": later, "answered_by": None}
+    token = _WAITING.set(mark)
+    try:
+        yield mark
+    finally:
+        _WAITING.reset(token)
+
+
+def reply_nobody_waits(speech, wait: float, *, later: bool = True) -> dict:
+    """A reply made with generate_reply, marked as nobody_waiting() marks a request (set right after it is made, before
+    its mind is asked). Returns the mark."""
+    speech._waiting = {"wait": float(wait), "later": later, "answered_by": None}
+    return speech._waiting
 
 
 def _chain(minds: list) -> "lk_llm.FallbackAdapter":
@@ -279,6 +306,24 @@ def _chain(minds: list) -> "lk_llm.FallbackAdapter":
             return chat(**kwargs)
         last.chat, last._last_in_chain = asked, True
     return lk_llm.FallbackAdapter(minds, attempt_timeout=QUEEN_BACKUP_WAIT, max_retry_per_llm=0)
+
+
+# A request her chosen mind took and then gave no word for is a hung request, not a slow mind: asked again, fresh, it
+# answers in a few seconds. For a reply that is read (typed, Telegram), that same mind is asked once more alongside
+# the backup, and the backup's words are held for FRESH_GRACE seconds: the fresh ask's first word in that time is the
+# reply; else the backup's, as before. The worst case grows by at most FRESH_GRACE over the backup's own first word.
+FRESH_GRACE = float(os.environ.get("FRESH_GRACE") or 12)
+
+
+def _step_waits_past(seconds: float) -> None:
+    """The step now running waits at least `seconds` more for anything new (never past its end in all)."""
+    step = _STEP.get()
+    wait = step and step.get("wait")
+    if not wait or wait.when() is None:
+        return
+    want = min(asyncio.get_running_loop().time() + seconds, step["end"])
+    if want > wait.when():
+        wait.reschedule(want)
 
 
 def _another_mind_asked() -> None:
@@ -394,8 +439,8 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
             if client is not None:
                 samples.append(asyncio.create_task(readiness()))
 
-        async def attempt(events, data, wait):
-            started = time.monotonic()
+        async def attempt(events, data, wait, asked_at=None):
+            started = asked_at or time.monotonic()
             is_backup = data is row["backup"]
             if is_backup:
                 sample()
@@ -407,6 +452,8 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                         data["first_token_seconds"] = round(time.monotonic() - started, 4)
                         data["outcome"] = "first_token"
                         row["answered_by"] = {"provider": data["provider"], "model": data["model"]}
+                        if (marked := _WAITING.get()) is not None:  # (its caller reads who answered: nobody_waiting)
+                            marked["answered_by"] = dict(row["answered_by"])
                         if is_fallback or primary_skipped:  # (a mind with a backup: the person is told who answers)
                             by = "backup" if is_backup else "sibling" if data is row.get("sibling") else "chosen"
                             _answering(by, primary_skipped or _why(row["primary"]), speech)
@@ -464,6 +511,21 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
 
         # Set the attempt context before chat creates the provider's native task (including an internal 5xx retry).
         is_fallback = isinstance(mind, lk_llm.FallbackAdapter)
+        mark = _WAITING.get()
+        if mark and not mark["later"] and is_fallback and attempts and not MIND["aside"] and provider != "chatgpt_plan":
+            # (its caller allows no later mind: the mind answering the person, asked alone for the caller's wait, never
+            # the chain, so a miss ends this request and sets nothing aside; the backup answering: the chain, below. The
+            # ChatGPT plan's chain keeps its own rule: a request without the plan's authority goes to its backup)
+            first, slot = attempts[0], slots[0]
+            options = kwargs.get("conn_options", APIConnectOptions())
+            kwargs = {**kwargs, "conn_options": dataclasses.replace(options, timeout=mark["wait"], max_retry=0)}
+            _step_waits_past(mark["wait"] + 1)
+            token = _MIND_ATTEMPT.set(row[slot])
+            try:
+                stream = first.chat(**kwargs)
+            finally:
+                _MIND_ATTEMPT.reset(token)
+            return _ObservedStream(stream, attempt(stream, row[slot], mark["wait"]), finish)
         data = row["backup"] if primary_skipped or is_fallback else row["primary"]
         token = _MIND_ATTEMPT.set(data if not is_fallback else None)
         try:
@@ -485,14 +547,74 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                     return stream
 
                 async def measured(*, llm, check_recovery=False):
-                    events = generate(llm=llm, check_recovery=check_recovery)
-                    if not check_recovery:
-                        slot = slots[attempts.index(llm)] if llm in attempts else "backup"
-                        if slot != slots[0]:
-                            _another_mind_asked()
-                            row[slot]["window_from_seconds"] = round(time.monotonic() - began, 3)  # (its own window)
-                        events = attempt(events, row[slot], QUEEN_BACKUP_WAIT)
+                    if check_recovery:
+                        async for chunk in generate(llm=llm, check_recovery=True):
+                            yield chunk
+                        return
+                    slot = slots[attempts.index(llm)] if llm in attempts else "backup"
+                    if slot != slots[0]:
+                        _another_mind_asked()
+                        row[slot]["window_from_seconds"] = round(time.monotonic() - began, 3)  # (its own window)
+                    first = row[slots[0]]
+                    if (slot == "backup" and slots == ("primary", "backup") and (_WAITING.get() or {}).get("fresh")
+                            and first.get("outcome") == "timeout" and first.get("taken_seconds") is not None):
+                        events = _fresh_or_backup(generate, attempts[0], llm)
+                    else:
+                        events = attempt(generate(llm=llm), row[slot], QUEEN_BACKUP_WAIT)
                     async for chunk in events:
+                        yield chunk
+
+                async def _fresh_or_backup(generate, chosen, backup):
+                    """Her chosen mind asked once more, fresh, alongside the backup, whose words wait FRESH_GRACE: the first
+                    word of either, by then the chosen mind's if it has one. Only the one served is measured and announced."""
+                    began_race = time.monotonic()
+                    row["fresh"] = {"provider": provider, "model": model, "outcome": "not_attempted"}
+                    held: asyncio.Queue = asyncio.Queue()
+                    end = object()
+
+                    async def hold() -> None:  # (the backup's chunks, kept until it is decided who answers)
+                        try:
+                            async for chunk in generate(llm=backup):
+                                await held.put(chunk)
+                            await held.put(end)
+                        except Exception as error:  # noqa: BLE001 (said in turn, if the backup is the one served)
+                            await held.put(error)
+                    holding = asyncio.ensure_future(hold())
+
+                    async def from_hold():
+                        while (item := await held.get()) is not end:
+                            if isinstance(item, Exception):
+                                raise item
+                            yield item
+
+                    fresh = generate(llm=chosen).__aiter__()
+                    got: list = []
+                    try:
+                        while not any(c.has_response() for c in got):
+                            left = FRESH_GRACE - (time.monotonic() - began_race)
+                            if left <= 0:
+                                raise asyncio.TimeoutError
+                            got.append(await asyncio.wait_for(fresh.__anext__(), left))
+                    except Exception:  # (no first word in its grace, or it failed: the backup's words, as before)
+                        row["fresh"]["outcome"] = "no_word_in_grace"
+                        with contextlib.suppress(Exception):
+                            await fresh.aclose()
+                        async for chunk in attempt(from_hold(), row["backup"], QUEEN_BACKUP_WAIT, began_race):
+                            yield chunk
+                        return
+                    holding.cancel()  # (her chosen mind answered: the backup's words are never said)
+                    holding.add_done_callback(lambda t: t.cancelled() or t.exception())
+                    with contextlib.suppress(AttributeError, IndexError, TypeError):  # (it answers: in place again)
+                        from livekit.agents.llm.fallback_adapter import AvailabilityChangedEvent
+                        mind._status[0].available = True
+                        mind.emit("llm_availability_changed", AvailabilityChangedEvent(llm=chosen, available=True))
+
+                    async def served():
+                        for chunk in got:
+                            yield chunk
+                        async for chunk in fresh:
+                            yield chunk
+                    async for chunk in attempt(served(), row["fresh"], QUEEN_BACKUP_WAIT, began_race):
                         yield chunk
                 try:
                     stream._try_generate = measured
@@ -729,11 +851,16 @@ class _GrokPlan(_OnlineMind):
                 while not task.done():
                     if stream._event_ch.output_sent:  # (her first word is out: the attempt's deadline is met)
                         break
-                    if not taken and not self._backed and stream._response_id:  # (xAI took it and thinks: waited for)
+                    if not taken and stream._response_id:  # (xAI took it: kept on the attempt's record, _fresh_or_backup)
                         taken = True
-                        until = max(until, began + QUEEN_ALONE_WAIT)
                         if (noted := _MIND_ATTEMPT.get()) is not None:
                             noted["taken_seconds"] = round(time.monotonic() - began, 4)
+                        # (and thinks: waited for when it stands alone, or for the wait its caller set, _WAITING)
+                        wait = QUEEN_ALONE_WAIT if not self._backed else (_WAITING.get() or {}).get("wait")
+                        if wait:
+                            until = max(until, began + wait)
+                            if self._backed:  # (the step waits for it, then a whole window for the backup after it)
+                                _step_waits_past(until - time.monotonic() + QUEEN_IDLE_WAIT)
                     left = until - time.monotonic()
                     if left <= 0:  # (her backup starts now: what it was waiting on is ended behind it, never waited for)
                         task.cancel()
@@ -1192,16 +1319,14 @@ FENCE = re.compile(r"^\s*(```|~~~)")
 
 
 def segments(text: str) -> list[str]:
-    """One reply's messages by main's {MSG_BREAK} control: a marker alone on its own line splits,
-    and nothing else does: one mid-line, in quote marks, a quote line or code, or written as \\{MSG_BREAK}, is literal
-    text. As many messages as she wrote. With no such line the reply is one message, exactly as she
-    wrote it; split, each message loses only the blank lines at its edges, where a marker stood. The one parser for
-    Telegram, history and speech (its fences as code_pieces reads them).
-    Stated exception, as the bracket rule: on a mind that does not decide its tools (this Mac's model wrote 5 of its 15
-    markers mid-line), a marker standing alone mid-line outside code, quote lines and quote marks splits
-    too, as on main, so the token is never shown to him, nor kept in her history for her to copy (_loose)."""
+    """One reply's messages by main's {MSG_BREAK} control, a token of hers and never text for him: a marker splits
+    wherever it stands outside code, quote lines and quote marks, on its own line or mid-line, glued to a word or not,
+    on every mind (minds write it mid-line too), so it never reaches Telegram, speech or her history (_loose). In code,
+    a quote line or quote marks, or written as \\{MSG_BREAK}, it is literal text. As many messages as she wrote. With no
+    marker the reply is one message, exactly as she wrote it; split, each message loses only the blank lines at its
+    edges and the spaces beside each marker. The one parser for Telegram, history and speech (its fences as
+    code_pieces reads them)."""
     parts, current, fence, split = [], [], "", False
-    loose = not mind_decides()
     for line in text.splitlines(keepends=True):
         opener = re.match(r"[ \t]*(`{3,}|~{3,})", line)
         if fence:
@@ -1218,7 +1343,7 @@ def segments(text: str) -> list[str]:
             parts.append("".join(current))
             current, split = [], True
             continue
-        if loose and (pieces := _loose(line.rstrip("\r\n"))):
+        if pieces := _loose(line.rstrip("\r\n")):
             end = line[len(line.rstrip("\r\n")):]
             for n, piece in enumerate(pieces):
                 if n:
@@ -1248,12 +1373,10 @@ def _trimmed(part: str) -> str:
 MARKER = re.compile(r"\{[ \t]*msg_break[ \t]*\}", re.I)
 
 
-def _standing(line: str, found: re.Match) -> bool:
-    """A marker standing as its own word: nothing but spaces or the line's ends beside it, not escaped, not in quotes."""
-    before, after = line[:found.start()], line[found.end():]
-    if before.endswith("\\") or (before and not before[-1].isspace()) or (after and not after[0].isspace()):
-        return False
-    return not _quoted(before)
+def _free(line: str, found: re.Match) -> bool:
+    """A marker of hers to split at, glued to a word or not: not escaped (\\{MSG_BREAK}), not inside quote marks."""
+    before = line[:found.start()]
+    return not before.endswith("\\") and not _quoted(before)
 
 
 def _quoted(before: str) -> bool:
@@ -1275,8 +1398,8 @@ def _quoted(before: str) -> bool:
 
 
 def _loose(line: str) -> list[str]:
-    """A line's pieces at each marker standing alone in it (_standing) outside its inline code, where a mind that does
-    not decide wrote it mid-line: [] when it has none, or it is a quote line. The spaces beside each marker go with it.
+    """A line's pieces at each marker of hers in it (_free) outside its inline code: [] when it has none, or it is a
+    quote line. The spaces beside each marker go with it.
     Inline code as the typed chat reads it as it streams (Scan): a run of backticks opens it, one as long closes it, and
     one left open runs to the line's end."""
     if line.lstrip().startswith(">"):
@@ -1295,7 +1418,7 @@ def _loose(line: str) -> list[str]:
         i += run
     if start >= 0:
         code.append((start, len(line)))
-    at = [m for m in MARKER.finditer(line) if _standing(line, m) and not any(a <= m.start() < b for a, b in code)]
+    at = [m for m in MARKER.finditer(line) if _free(line, m) and not any(a <= m.start() < b for a, b in code)]
     if not at:
         return []
     edges = [0, *[e for m in at for e in (m.start(), m.end())], len(line)]
@@ -3276,6 +3399,18 @@ BEAT_ACT = ("You looked up and there is work you said you would do and never sta
             "tell them in a few words that you have. Do not mention heartbeats or that you looked up.")
 
 
+async def _tell_quiet(queen, mode: str, text: str, turn_id: str) -> None:
+    """A turn heard and kept quiet by the call's mode: whoever listens (Queen.quiet_heard) is told the mode and the turn,
+    never the words, so silence is never left unexplained. Nobody listening (no page): nothing to tell. A telling that
+    fails leaves the turn as it is."""
+    tell = getattr(queen, "quiet_heard", None)
+    if text.strip() and tell is not None:
+        try:
+            await tell(mode, turn_id)
+        except Exception as error:  # noqa: BLE001
+            queen.record("error", source="quiet told", error=type(error).__name__)
+
+
 class Queen(Agent):
     """One Viventium on every channel. `mode` picks the channel's style (brain/modes/*.md); the rules,
     memory, Feelings and Workers are shared. Per-turn notes come from `prepare`, on every channel."""
@@ -3361,6 +3496,9 @@ class Queen(Agent):
         # settings page sets where a call starts): "talk", "wing" (quiet beside you, speaks when spoken to) or
         # "listen" (hears and keeps, never speaks).
         self.call_mode = "talk"
+        # Told when a turn is heard and, by the call's mode, not answered (call/agent.py: the page says so, with one tap
+        # to Talk): async (mode, turn_id). None: nothing to tell.
+        self.quiet_heard = None
         self.synced = max((item.get("row", 0) for item in history or []), default=0)
         self._core = (life.core_version(), ledger.version())  # (the core view, and his own prompt texts)
         instructions = self._compose_instructions()
@@ -3558,6 +3696,12 @@ class Queen(Agent):
                     approval = plan_auth.capture(plan_auth.Purpose.TURN, attended=True)
                 if speech is not None:
                     saved[speech] = approval
+        # (nobody waits in silence: a reply its caller marked, reply_nobody_waits, or a reply to the person's own words
+        # typed or on Telegram, which gets the fresh ask, FRESH_GRACE; a spoken call and anything else keep their timing)
+        mark = getattr(speech, "_waiting", None) or (
+            {"wait": None, "later": True, "fresh": True, "answered_by": None}
+            if getattr(speech, "_person_words", False) and getattr(self, "channel", "call") != "call" else None)
+        waiting = _WAITING.set(mark)
         stream = self._llm_node(chat_ctx, tools, model_settings)
         try:
             while True:
@@ -3568,6 +3712,8 @@ class Queen(Agent):
             return
         finally:
             await stream.aclose()
+            with contextlib.suppress(ValueError):  # (closed from another context: the mark goes with it)
+                _WAITING.reset(waiting)
 
     async def _llm_node(self, chat_ctx, tools, model_settings):
         # A draft of her reply, made by LiveKit at his words' transcript while his turn may not have ended yet (Queen._draft):
@@ -3799,7 +3945,7 @@ class Queen(Agent):
                 async for chunk in self._unbracketed(stream):
                     called |= bool(getattr(getattr(chunk, "delta", None), "tool_calls", None))
                     yield chunk
-            if choice == "change" and not called:
+            if choice in ("change", "answer") and not called:  # (an answer: her words still never claim work unstarted)
                 self._verdict_late(gate, question, {"handed": False}, when="after her step")
             return
         draft = bounded(Agent.default.llm_node(self, chat_ctx, tools, model_settings))
@@ -3844,7 +3990,7 @@ class Queen(Agent):
     def _verdict_late(self, gate: dict, question: asyncio.Future, watch: dict, when: str = "after her words") -> None:
         choice = _verdict(question)
         self.record("hands", choice=choice or "unavailable", when=when)
-        if choice in ("act", "change", ""):
+        if choice in ("act", "change", "answer", ""):
             asyncio.get_running_loop().create_task(self._late(gate, watch, choice))
 
     async def _late(self, gate: dict, watch: dict, choice: str = "act") -> None:
@@ -3855,7 +4001,9 @@ class Queen(Agent):
         (core/jobs.owe), in his next turn's notes and in the next check. The same once he spoke again or talked over her,
         each looked at again after every wait. Only her own words playing on past LATE is no reason: they are judged
         when they end (PLAYOUT_WAIT). With no verdict, check the same reply for a promise. If it made one without a
-        tool call, correct what the user heard. The promise itself gives no authority to start a job."""
+        tool call, correct what the user heard. The promise itself gives no authority to start a job. An "answer"
+        whose reply still says the work is under way, with no call: corrected the same way, and his ask kept owed
+        (unstarted_note in his next turn's notes, and the next check), so her words never stand as work started."""
         speech = self._words.get("speech") if self._words.get("turn") == gate["turn"] else None
         left = gate["at"] + LATE - time.monotonic()
         if speech is not None and left > 0:
@@ -3889,12 +4037,22 @@ class Queen(Agent):
             return
         hers = " ".join((i.text_content or "").strip() for i in speech.chat_items
                         if i.type == "message" and i.role == "assistant" and (i.text_content or "").strip())
-        if not choice and (calls or not hers):
+        if choice in ("", "answer") and (calls or not hers):
             return
-        word = await self._said_started(gate["words"], hers, retry=not choice)
+        if choice == "answer":  # (once a turn: each step of her reply without a call ends here)
+            if self._words.get("answer_checked"):
+                return
+            self._words["answer_checked"] = True
+        word = await self._said_started(gate["words"], hers, retry=not choice, what=UNDER_WAY if choice == "answer" else STARTED)
         if speech.interrupted or self.turn != gate["turn"]:  # (he spoke again, or talked over her, while it was asked)
             if choice == "act":
                 self._owe(gate["words"], "he spoke again meanwhile")
+            return
+        if choice == "answer":
+            if word == "yes":
+                self.record("hands", late="corrected", why="the check said answer; her words said it started")
+                self._owe(gate["words"], "her words said it started; the check said answer")
+                await self.session.say("I didn't start the background job.")
             return
         if not choice:
             if word == "yes":
@@ -3909,8 +4067,8 @@ class Queen(Agent):
         reply.add_done_callback(lambda done: self._late_unrun(done, gate["words"]))
         self.record("hands", late="started")
 
-    async def _said_started(self, words: str, reply: str, *, retry: bool) -> str:
-        system, talk = said_question("say that it is doing, or has started, what they asked", f'They asked: "{words}"', reply)
+    async def _said_started(self, words: str, reply: str, *, retry: bool, what: str = "") -> str:
+        system, talk = said_question(what or STARTED, f'They asked: "{words}"', reply)
         if retry and (mind := self.session.llm) is not None:
             # The quick helpers just gave no verdict. Ask the mind that can answer here, with no tools or playout.
             chat = ChatContext()
@@ -4996,9 +5154,11 @@ class Queen(Agent):
         try:
             if self.mode == "call" and self.call_mode == "listen":  # Listen only: heard and kept, never answered
                 await self.heard(text)
+                await _tell_quiet(self, "listen", text, new_message.id)
                 raise StopResponse()
             if self.mode == "call" and self.call_mode == "wing" and not await self.spoken_to(text):
                 await self.heard(text)  # Wing: words meant for someone else are kept, and she stays quiet
+                await _tell_quiet(self, "wing", text, new_message.id)
                 raise StopResponse()
             before = {item.id for item in turn_ctx.items}
             await self.prepare(turn_ctx, text, new_message.created_at, attended=self.mode == "call", turn_id=new_message.id)
@@ -5045,6 +5205,7 @@ class Queen(Agent):
         _, words, shown = answering
         turn_id = self._words.get("turn_id", "") if self._words.get("turn") == turn else ""
         speech._brain_trace_turn_id = turn_id
+        speech._person_words = True  # (a reply to the person's own words: read when typed or on Telegram, _WAITING)
         self.record("reply_source", speech=speech.id, turn_id=turn_id, turn=turn)
         entry = {"words": words, "state": "waiting", "at": began or time.time()}
         self.inputs = [e for e in self.inputs if e["state"] != "done"][-9:] + [entry]
@@ -5378,6 +5539,15 @@ def told_what(job: dict) -> str:
     # _after_worker_reply, _settled). The text judge cannot see an automatic page offer:
     # asking it to judge that too repeated a useful result after an already delivered file.
     return "give them this result, its useful part"
+
+
+# What the late check asks of her words (Queen._late, said_question): whether they say she is doing what was asked (a
+# late "act": its hand-off follows them; no verdict: what he heard is corrected), and, after an "answer" verdict, the
+# narrower question of work under way after them. Asked the first after an answer, her quick helpers took "I'm here"
+# (to being asked whether she was still there) for a start in 1 of 20 everyday replies; the second, 0 of 20, and 10 of
+# 10 replies that said a search was under way (Grok on a subscription).
+STARTED = "say that it is doing, or has started, what they asked"
+UNDER_WAY = "say that work for them has started and goes on after these words (a search, a Worker or a task under way)"
 
 
 def said_question(what: str, context: str, hers: str, *, tool_results=()) -> tuple[str, str]:
@@ -5789,13 +5959,13 @@ async def typed_out(text, names=(), paragraphs: bool = True, his: str = ""):
     shown (this Mac's model sometimes writes the call instead of making it; Telegram drops the same; his: his words of
     this turn, written_call), and a {MSG_BREAK} alone on its own line outside code is a new paragraph there, as her
     history keeps it (one blank line; paragraphs=False keeps it, for a channel that splits her reply into messages
-    itself, SPLITS). Any other marker is her literal text. Only a brace is ever held: until it closes, and then until
-    the line ends, so a marker with words after it stays as she wrote it. On a mind that does not decide its tools, a
-    marker standing alone mid-line outside code and quotes is a paragraph too, exactly as segments keeps it:
-    there the spaces before a brace wait (pad) until what follows shows whether they go with a marker."""
+    itself, SPLITS). A marker mid-line outside code, quote lines and quote marks, glued to a word or not, is a paragraph
+    too, on every mind, exactly as segments keeps it; escaped or in quotes it is her literal text. Only a brace is ever
+    held, until it closes (and the spaces after a whole marker), and the spaces before a brace wait (pad) until what
+    follows shows whether they go with a marker."""
     tools = (*TOOL_NAMES, *names)
     opening, dropped, scan, held, prev, lead = "", False, Scan(), "", "", ""  # (prev "": nothing shown yet)
-    loose, pad, mid = paragraphs and not mind_decides(), "", False  # (mid: the brace held came after words on its line)
+    loose, pad, mid = paragraphs, "", False  # (mid: the brace held came after words on its line)
     async for piece in text:
         if not isinstance(piece, str):
             yield piece
@@ -5830,8 +6000,7 @@ async def typed_out(text, names=(), paragraphs: bool = True, his: str = ""):
                     out.append("" if prev == "" else "\n")
                     held, prev = "", "\n"
                     continue
-                standing = held[-1] in " \t" or ch == "\n"  # (this Mac's model: a marker standing alone mid-line)
-                if loose and standing and (mid or not scan.line.strip()):
+                if loose and (mid or not scan.line.strip()):  # (a marker of hers, mid-line or with words after it)
                     paragraph = "\n\n" if mid else ("" if prev == "" else "\n")
                     out.append(paragraph)
                     scan.feed(paragraph)
@@ -5847,8 +6016,9 @@ async def typed_out(text, names=(), paragraphs: bool = True, his: str = ""):
             if ch == "{" and paragraphs and not scan.literal() and not scan.line.strip():
                 held, lead = lead + ch, ""  # (with the spaces before it on its line: they go with a marker)
                 continue
-            if ch == "{" and loose and pad and not scan.literal() and not _quoted(scan.line + pad):
-                held, pad, mid = pad + ch, "", True  # (after words, with the spaces before it: a marker may stand)
+            if ch == "{" and loose and scan.line.strip() and (pad or prev != "\\") and not scan.literal() \
+                    and not _quoted(scan.line + pad):
+                held, pad, mid = pad + ch, "", True  # (after words, glued or with spaces before it: a marker may stand)
                 continue
             if ch in " \t" and paragraphs and not scan.literal() and not scan.line.strip() and prev in ("", "\n"):
                 lead += ch  # (a line's first spaces: kept until what follows shows whether it is a marker's line)

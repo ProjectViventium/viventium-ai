@@ -40,7 +40,7 @@ from chat.telegram_html import LINK, markdown_to_html, quoted_fences  # noqa: E4
 from livekit.agents import RunContext, function_tool  # noqa: E402
 from livekit.agents.llm import ToolError, ToolResult  # noqa: E402
 from livekit.agents.voice.transcription.filters import filter_emoji, filter_markdown  # noqa: E402
-from core import attachments, clock, helpers, jobs, life, relationship, schedules, telegram_approvals  # noqa: E402
+from core import attachments, clock, helpers, jobs, life, relationship, schedules, telegram_approvals, tooltrace  # noqa: E402
 from core.state import STATE_ROOT, call_live, closed_file, log_file, setting  # noqa: E402
 from speech import sounds  # noqa: E402
 from speech import live as live_voice  # noqa: E402
@@ -545,6 +545,7 @@ class Telegram:
         self.session.on("speech_created", self._speech)
         self.session.on("conversation_item_added", self._item)
         self.session.on("error", self._mind_error)
+        tooltrace.follow(self.session, note)  # (her tool calls in her turn log, as on a call: core/tooltrace.py)
         await self.session.start(agent=self.queen)
         note("call_start")
         log.info("ready")

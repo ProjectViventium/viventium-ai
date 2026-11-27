@@ -89,12 +89,29 @@ UNSEEN = ("Where words above are marked as not shown here, they are out of your 
           "say that part is not in view; never guess what it says.")
 SEARCHED = ("The memory search was run for you: its finds are below, each with where it comes from, and you may name "
             "those. ")  # (said first, for a cortex whose card searches memory: it is the one tool its run had)
+# Said with it to a cortex whose card hands back only finds (needs_finds): what it hands back is kept only when it names
+# a find it was shown, by its number; the number becomes where that find comes from (from_finds).
+BY_NUMBER = "Name each find you use by its number, as [1]: only what names one is handed on. "
+NUMBERED = re.compile(r"\[(\d{1,2})\]")  # (the numbers it was given, [1] to [12]: never its words)
 
 
-def can(where: "Place", searched: bool = False, unseen: bool = False) -> str:
+def can(where: "Place", searched: bool = False, unseen: bool = False, by_number: bool = False) -> str:
     """What a cortex is told it has in this run, as it is."""
     told = CAN.get(where.kind, NO_TOOLS)
-    return (SEARCHED if searched else "") + told + (" " + UNSEEN if unseen and where.kind != "worker" else "")
+    return ((SEARCHED + (BY_NUMBER if by_number else "")) if searched else "") + told + \
+        (" " + UNSEEN if unseen and where.kind != "worker" else "")
+
+
+def from_finds(words: str, found: list[dict]) -> str:
+    """A thought of a cortex that hands back only finds, as she is given it: each find it rests on named by the number it
+    was given, said as where that find comes from; "" when it names none of them (it came from no find: nothing is
+    handed back, so a missing find is never turned into a claim about what is not there). By the ids alone: never a
+    check of its wording."""
+    named = {int(n) for n in NUMBERED.findall(words)} & set(range(1, len(found) + 1))
+    if not named:
+        return ""
+    return NUMBERED.sub(lambda m: f"({found[int(m[1]) - 1].get('source') or found[int(m[1]) - 1].get('path', '')})"
+                        if 1 <= int(m[1]) <= len(found) else m[0], words)
 
 
 # What a part is given of the conversation. The turn that just ended is given whole up to its place's room: about a
@@ -392,7 +409,11 @@ def _context(where: Place, talk: list[tuple[str, str]], found: list[dict] | None
              count: int = 0, seen: list | None = None, seen_had: list | None = None) -> str:
     from core import life
     parts = []
-    if found is not None:  # (a summary by its date and short id, never its file's name: core/life.name_of)
+    if found is not None and not getattr(found, "answered", True):  # (it could not search: never "found nothing")
+        why = getattr(found, "why", "")
+        parts.append("The memory search could not run this time" + (f" ({why})" if why else "") +
+                     ": nothing is known from it, either way.")
+    elif found is not None:  # (a summary by its date and short id, never its file's name: core/life.name_of)
         parts.append(("What the memory search found in the person's Life, closest in meaning first, each with where it "
                       "comes from:\n\n" + "\n\n".join(f"[{n}] {life.name_of(f['path'])} (line {f['line']}):\n{f['text']}"
                                                      for n, f in enumerate(found, 1)))
@@ -1442,8 +1463,13 @@ class Subconscious:
                 # (searched by their words and hers, as before: a Worker result is what she was given, not what
                 # the turn is about)
                 found = await asyncio.to_thread(memory.deep, said(self.standing(turn)[0].talk), tuple(self.shown))
-            except Exception:  # noqa: BLE001 (no index, no embedding server: nothing found)
-                found = []
+            except Exception as e:  # noqa: BLE001 (its search could not run: said as that, never as nothing found)
+                found = memory.Near(answered=False, why=f"it failed ({type(e).__name__})")
+            if not memory.answered(found) and cortex.get("needs_finds"):
+                self.record("subconscious", event="cortex", state="nothing",
+                            why="the memory search could not run" + (f": {found.why}" if found.why else ""),
+                            ms=round((time.monotonic() - began) * 1000), **fields)
+                return None
             if not found and cortex.get("needs_finds"):
                 self.record("subconscious", event="cortex", state="nothing", why="the memory search found nothing new",
                             ms=round((time.monotonic() - began) * 1000), **fields)
@@ -1461,18 +1487,26 @@ class Subconscious:
             return text
         local_recall = _local_recall(cortex)
         recall_rule = "Return relevant facts in your own words. Do not quote retrieved passages." if local_recall else ""
+        searched = found is not None and getattr(found, "answered", True)
+        by_number = bool(searched and found and cortex.get("needs_finds"))
         system = "\n\n".join(part for part in (state["every_cortex"].strip(), cortex["then"].strip(), recall_rule,
-                                                 can(where, found is not None, _unseen(user()))) if part)
+                                                 can(where, searched, _unseen(user()), by_number)) if part)
         ran: dict = {}
         text, how = await ask(where, system, user, name=f"Cortex: {cortex['name']}", max_tokens=900,
                               wait=WAIT.get(where.kind, WAIT["mac"]), busy=self.busy, quiet=self.quiet, ran=ran, beside=True,
                               still=lambda: self.stands(read.get("refs", [])))
         words, ms = thought_of(text) if how == "ok" else "", round((time.monotonic() - began) * 1000)
+        unfound = ""
+        if words and by_number:  # (it hands back only finds: one it names, or nothing)
+            unfound, words = words, from_finds(words, found)
+        if words:
+            unfound = ""
         fields.update(where=ran.get("name", where.name), effort=ran.get("effort", where.effort), route=ran.get("route", ""),
                       **({"owned": True} if ran.get("owned") else {}), **({"unframed": ran["unframed"]} if ran.get("unframed") else {}),
                       **({"room_ms": ran["room_ms"]} if "room_ms" in ran else {}))
         self.record("subconscious", event="cortex", state="thought" if words else "nothing" if how == "ok" else "failed",
-                    how=how, ms=ms, words=words[:300], **fields, **({"usage": ran["usage"]} if ran.get("usage") else {}))
+                    how=how, ms=ms, words=words[:300], **fields, **({"usage": ran["usage"]} if ran.get("usage") else {}),
+                    **({"why": "its thought named none of its finds", "unfound": unfound[:300]} if unfound else {}))
         if words and local_recall and found:
             # A model can echo its input. Keep that result in the local record instead of forwarding it.
             answer = " ".join(words.casefold().split())
