@@ -10,6 +10,7 @@ import {
 } from 'livekit-client';
 import { useSessionContext } from '@livekit/components-react';
 import {
+  ASK,
   NOT_YET,
   type Offered,
   add,
@@ -111,7 +112,7 @@ export function useOfferedFiles(on: boolean) {
       return room.localParticipant.performRpc({
         destinationIdentity: agent.identity,
         method: 'viv.files',
-        payload: '',
+        payload: ASK,
         responseTimeout: 10_000,
       });
     };

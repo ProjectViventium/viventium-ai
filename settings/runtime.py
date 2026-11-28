@@ -373,13 +373,16 @@ def own_presence(name: str) -> tuple[bool, bool]:
     except (OSError, ValueError):
         known = {}
     last = known.get(name) or {}
-    if last and time.time() - float(last.get("t") or 0) < OWN_FRESH:
+    from core import grok_sign_in
+    # (a sign-in kept after what the Keychain last said: that answer is old. Before, for about 18 s after
+    # its approval the page offered Connect again, from what it knew before it, even on a reload)
+    kept = grok_sign_in.kept_since(float(last.get("t") or 0))
+    if last and not kept and time.time() - float(last.get("t") or 0) < OWN_FRESH:
         _own_now[name] = (bool(last.get("on")), False)
         return _own_now[name]
-    from core import grok_sign_in
     said = grok_sign_in.presence(OWN_WAIT)
-    if said is None:  # (no answer in time: what it last said, still being checked)
-        _own_now[name] = (bool(last.get("on")), True)
+    if said is None:  # (no answer in time: what it last said, still being checked; just kept: kept, by its own record)
+        _own_now[name] = (True, False) if kept else (bool(last.get("on")), True)
         return _own_now[name]
     known[name] = {"on": said, "t": time.time()}
     with contextlib.suppress(OSError):
@@ -655,6 +658,29 @@ def connect_telegram(value: str, env: dict) -> str:
         private_write(LOGS / "telegram-bot.json", json.dumps({"bot": "@" + me["username"], "id": str(me["id"])}))
     except (OSError, subprocess.TimeoutExpired):
         return "The bot token could not be saved. Try again."
+    return ""
+
+
+def disconnect_telegram(env: dict) -> str:
+    """Let her bot go: its token leaves the Keychain and its name leaves this Mac (logs/telegram-bot.json), so another bot
+    can be connected (connect_telegram). "" or why not. Before, once a bot was connected Settings had no way to let it go,
+    and turning Viventium off left its token in the Keychain."""
+    if OFFLINE:
+        return "Telegram is unavailable while offline."
+    item = env.get("TELEGRAM_TOKEN_ITEM") or "viventium-light/telegram_bot_token"
+    try:
+        for _ in range(5):  # (each item of that name, however it was made: until the Keychain has none)
+            done = subprocess.run(["security", "delete-generic-password", "-s", item], capture_output=True, timeout=20)
+            if done.returncode == 44:  # (no such item: gone)
+                break
+            if done.returncode:
+                return "The Keychain did not let the bot's token go."
+        else:
+            return "The Keychain did not let the bot's token go."
+    except (OSError, subprocess.TimeoutExpired):
+        return "The Keychain could not be reached. Try again."
+    with contextlib.suppress(OSError):
+        (LOGS / "telegram-bot.json").unlink(missing_ok=True)
     return ""
 
 

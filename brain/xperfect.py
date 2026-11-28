@@ -839,7 +839,10 @@ class XPerfect:
 
     async def routes(self, order: list[str]) -> list[str]:
         """Every way a job can run, in order: for each harness, this Mac's own sign-in, then each account you
-        connected for that provider; none you turned off. LOCAL (the Worker on this Mac) stays as it is."""
+        connected for that provider; none you turned off. LOCAL (the Worker on this Mac) stays as it is. A route Light
+        last found needing a log-in or at its limit, and still resting (core/accounts.resting), goes after all the
+        others, in the same order: tried only when they are not there or fail."""
+        from core import accounts as found
         off, accounts, out = turned_off(), await self.accounts(), []
         for harness in order:
             if harness == LOCAL or harness not in PROVIDER:
@@ -847,7 +850,8 @@ class XPerfect:
                 continue
             mine = [route(harness, str(a["account_id"])) for a in accounts if a.get("provider") == PROVIDER[harness]]
             out += [t for t in [harness, *mine] if t not in off]
-        return out
+        resting = {t for t in out if t != LOCAL and found.resting(t)}
+        return [t for t in out if t not in resting] + [t for t in out if t in resting]
 
     async def submit(self, job: str, request: str, brief: str, profile: str = "", again: bool = False,
                      account: str = "", created=None) -> tuple[str, str]:

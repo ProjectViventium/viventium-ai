@@ -220,6 +220,15 @@ def turn_model():
     return EnglishModel(unlikely_threshold=float(os.environ.get("TURN_THRESHOLD", "0.08")))
 
 
+def reads_pictures(payload: str) -> bool:
+    """Whether the page's ask for her files says it reads which are pictures: its payload {"pictures": true}."""
+    try:
+        asked = json.loads(payload or "{}")
+    except ValueError:
+        return False
+    return isinstance(asked, dict) and asked.get("pictures") is True
+
+
 class FilesTold:
     """Which files she offered in the conversation, for her page (its FileLink draws a link of hers as a file only for
     these, once it knows them: call/ui lib/offered-files.ts). The page's ask is the truth (answer: the whole set, from
@@ -237,10 +246,14 @@ class FilesTold:
         self.known = set(ids)
         return ids, pictures
 
-    async def answer(self) -> str:  # (the page's ask, RPC "viv.files")
+    async def answer(self, payload: str = "") -> str:  # (the page's ask, RPC "viv.files")
+        """Her whole set, in the shape the asking page reads: {ids, pictures} for a page that says it reads pictures
+        (its ask's payload {"pictures": true}: call/ui lib/offered-files.ts ASK), else the plain list of ids. A page
+        opened before an update keeps its own code until it is reloaded, and a page from before pictures sends nothing
+        and reads only a list (release 60: such a page asked again every half second for 4 minutes)."""
         ids, pictures = await self._read()
         self.note("files_asked", files=len(ids))
-        return json.dumps({"ids": ids, "pictures": pictures})
+        return json.dumps({"ids": ids, "pictures": pictures} if reads_pictures(payload) else ids)
 
     async def whole(self) -> None:
         try:
@@ -1013,7 +1026,7 @@ async def call(ctx: JobContext) -> None:
             raise rtc.RpcError(2000, "This belongs to the current chat.")
         page_listening.set()
         try:
-            return await files.answer()
+            return await files.answer(request.payload)
         except Exception as e:  # noqa: BLE001 (the page asks again)
             raise rtc.RpcError(2000, "The files are not known yet.") from e
     ctx.room.local_participant.register_rpc_method("viv.files", files_asked)

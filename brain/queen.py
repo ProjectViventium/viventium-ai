@@ -34,7 +34,7 @@ from livekit.agents.voice.agent import ModelSettings
 from livekit.agents.llm import (ChatChunk, ChatContext, ChatMessage, ChoiceDelta, FunctionToolCall, StopResponse, ToolError,
                                 ToolResult, Toolset)
 from livekit.plugins import anthropic, openai, xai
-from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, field_validator
 
 from . import feelings, greeting
 from . import prompts as ledger
@@ -294,6 +294,17 @@ def reply_nobody_waits(speech, wait: float, *, later: bool = True) -> dict:
     its mind is asked). Returns the mark."""
     speech._waiting = {"wait": float(wait), "later": later, "answered_by": None}
     return speech._waiting
+
+
+def cannot_decide_now(error: Exception) -> bool:
+    """Whether her chosen mind's failure is one waiting will not change: refused or signed out (401, 403, turned off),
+    at its limit (402, 429), or not reached at all (no connection). A mind only slow to answer is never one (a timeout
+    is LiveKit's connection error too: told apart here). A request made as nobody waits is then asked once more through
+    her chain (beat_decision)."""
+    from livekit.agents import APIConnectionError, APIStatusError, APITimeoutError
+    if isinstance(error, APIStatusError):
+        return error.status_code in (401, 402, 403, 429)
+    return isinstance(error, APIConnectionError) and not isinstance(error, APITimeoutError)
 
 
 def _chain(minds: list) -> "lk_llm.FallbackAdapter":
@@ -1305,6 +1316,14 @@ def _usable(key: str) -> bool:
     if key == "grok_mind":
         from core import grok_sign_in
         return not _turned_off(key) and grok_sign_in.signed_in()
+    if key == "chatgpt_mind":  # (your ChatGPT plan: Light's own Sign in with ChatGPT, as vx have_key reads it. Before, it
+        # was read as an environment key and never found: a call's mind on the plan was always refused)
+        from core import chatgpt_sign_in
+        try:
+            state = chatgpt_sign_in.connection.status().get("state")
+        except Exception:  # noqa: BLE001 (its record or the Keychain unreadable: not usable now)
+            return False
+        return not _turned_off(key) and state in ("connected", "limited")
     return bool(os.environ.get(key))
 
 
@@ -1398,6 +1417,17 @@ def _chosen_now() -> list[str]:
     return [os.environ.get("QUEEN", "ollama"), os.environ.get("QUEEN_MODEL", "")]
 
 
+def chosen_since_told(by: str) -> bool:
+    """Her chosen mind answers, and the last notice was about another mind chosen then: the person chose this one since,
+    so there is nothing to tell, and the record moves to it quietly (Queen._mind_answering)."""
+    try:
+        said = json.loads(TOLD.read_text())
+        told, about = said.get("told", "chosen"), said.get("mind")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return by == "chosen" and told != "chosen" and about is not None and about != _chosen_now()
+
+
 def mind_notice(by: str, why: str) -> str:
     """What the person is told when the mind answering them changes, from facts only ("" when they already know). A
     notice that another mind answers is about the mind chosen then and the reason given then: once another mind is
@@ -1411,6 +1441,8 @@ def mind_notice(by: str, why: str) -> str:
     if by == told and (by == "chosen" or ((about is None or about == _chosen_now())
                                           and (not given or WHY_NOW.get(given, WHY_NOW["down"]) == reason))):
         return ""
+    if chosen_since_told(by):  # (the mind answering was chosen after that notice: it never stood aside, so nothing
+        return ""              # answers "again"; it once said "again" of a mind just chosen)
     chosen, backup = mind_names()
     if by == "chosen":
         return f"{chosen} is answering again."
@@ -2016,6 +2048,18 @@ class BeatChoice(BaseModel):
     """The runtime's complete decision contract, independent of any accompanying prose."""
     model_config = ConfigDict(extra="forbid", strict=True)
     choice: Literal["quiet", "speak", "act"]
+    # (when she looks around next: her own choice, with the same words and look; kept in her bounds, core/routines.NEXT.
+    # Optional, so a decision that leaves it out still counts: the page's pace is the next look then)
+    next_look_minutes: int | None = Field(default=None, strict=False, description=(
+        "In how many minutes you want to look around again (10 to 180), as this moment and their day suggest."))
+
+    @field_validator("next_look_minutes", mode="before")
+    @classmethod
+    def _minutes(cls, value):  # (a number she wrote another way counts; anything else is no choice, never a failed beat)
+        try:
+            return None if value is None or isinstance(value, bool) else int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
 
 
 @dataclass(frozen=True)
@@ -2033,8 +2077,13 @@ def beat_structure(provider: str) -> BeatStructure:
     return BeatStructure(provider, "legacy_word", reason="route has no declared native function tools")
 
 
+def _beat_schema() -> dict:  # (both fields asked for; a decision without its next look still counts: BeatChoice)
+    schema = BeatChoice.model_json_schema()
+    return {**schema, "required": ["choice", "next_look_minutes"]}
+
+
 @function_tool(raw_schema={"name": "choose_beat", "description": "Return the heartbeat decision, as its words say.",
-                           "parameters": BeatChoice.model_json_schema()})
+                           "parameters": _beat_schema()})
 async def _choose_beat(raw_arguments: dict):
     # This tool is a return value only. It is never executed by an AgentSession.
     raise RuntimeError("choose_beat is a decision, not an action")
@@ -2049,6 +2098,7 @@ class BeatDecision:
     again: bool = False  # (its request timed out or could not get through, as LiveKit marks an error retryable: the
     # same question may be asked once more a little later; a refusal or an invalid structure never is)
     answered_by: dict | None = None  # (the mind that gave its first word, as its request's mark says: nobody_waiting)
+    next_look: int | None = None  # (her own next look, minutes, as she gave it; bounded where it is kept)
 
 
 async def beat_decision(mind, system: str, question: str, *, provider: str | None = None,
@@ -2065,33 +2115,45 @@ async def beat_decision(mind, system: str, question: str, *, provider: str | Non
         return BeatDecision(route, why="its model is unavailable")
     ctx = ChatContext()
     ctx.add_message(role="system", content=system)
-    ctx.add_message(role="system", content="Return your decision with choose_beat, using its choice field.")
+    ctx.add_message(role="system", content="Return your decision with choose_beat, using its choice and "
+                                             "next_look_minutes fields.")
     ctx.add_message(role="user", content=question)
     calls, first = [], None
     began = time.monotonic()
     from core import accounts
     # (nobody waits on a check-in: the mind answering the person is asked alone for this wait, never handed to a later
-    # mind inside it, and a miss sets nothing aside; while the backup answers the person's turns, the backup is asked)
-    with nobody_waiting(wait, later=False) as mark:
-        try:  # (unattended, like the next-call greeting: its own time limit says nothing of whether the account answers)
-            with accounts.background_write():
-              async with asyncio.timeout(wait):
-                async with mind.chat(chat_ctx=ctx, tools=[_choose_beat], tool_choice=route.tool_choice,
-                                     parallel_tool_calls=False,
-                                     conn_options=APIConnectOptions(timeout=wait, max_retry=0)) as stream:
-                    async for chunk in stream:
-                        if chunk.delta and chunk.delta.tool_calls:
-                            if first is None:
-                                first = time.monotonic() - began
-                            calls.extend(chunk.delta.tool_calls)
-                        if chunk.usage and (spent := routines.DIRECT.get()) is not None:
-                            spent["in"] = spent.get("in", 0) + int(chunk.usage.prompt_tokens or 0)
-                            spent["out"] = spent.get("out", 0) + int(chunk.usage.completion_tokens or 0)
-        except Exception as error:  # no error body or model text in the failure record
-            from livekit.agents import APIError
-            return BeatDecision(route, why=f"its decision request failed ({type(error).__name__})",
-                                first_useful_seconds=first, answered_by=mark.get("answered_by"),
-                                again=isinstance(error, TimeoutError) or (isinstance(error, APIError) and error.retryable))
+    # mind inside it, and a miss sets nothing aside; while the backup answers the person's turns, the backup is asked.
+    # A chosen mind that cannot decide for a reason waiting will not change (refused, at its limit, turned off, not
+    # reached) is asked once more through her chain, so the mind that answers for her decides: before, with her Grok
+    # week used up and no turn of his since, every check-in failed, her 6 am wake-up among them)
+    for later in (False, True):
+        error = None
+        with nobody_waiting(wait, later=later) as mark:
+            try:  # (unattended, like the next-call greeting: its own time limit says nothing of whether the account answers)
+                with accounts.background_write():
+                  async with asyncio.timeout(wait):
+                    async with mind.chat(chat_ctx=ctx, tools=[_choose_beat], tool_choice=route.tool_choice,
+                                         parallel_tool_calls=False,
+                                         conn_options=APIConnectOptions(timeout=wait, max_retry=0)) as stream:
+                        async for chunk in stream:
+                            if chunk.delta and chunk.delta.tool_calls:
+                                if first is None:
+                                    first = time.monotonic() - began
+                                calls.extend(chunk.delta.tool_calls)
+                            if chunk.usage and (spent := routines.DIRECT.get()) is not None:
+                                spent["in"] = spent.get("in", 0) + int(chunk.usage.prompt_tokens or 0)
+                                spent["out"] = spent.get("out", 0) + int(chunk.usage.completion_tokens or 0)
+            except Exception as failed:  # no error body or model text in the failure record
+                error = failed
+        behind = len(getattr(mind, "_llm_instances", ()) or ()) > 1  # (a mind behind her chosen one in her chain)
+        if error is None or later or not behind or not cannot_decide_now(error):
+            break
+        calls, first = [], None
+    if error is not None:
+        from livekit.agents import APIError
+        return BeatDecision(route, why=f"its decision request failed ({type(error).__name__})",
+                            first_useful_seconds=first, answered_by=mark.get("answered_by"),
+                            again=isinstance(error, TimeoutError) or (isinstance(error, APIError) and error.retryable))
     who = mark.get("answered_by") or {}
     if len(calls) != 1 or calls[0].name != "choose_beat":
         return BeatDecision(route, why="its model returned no single choose_beat structure", first_useful_seconds=first,
@@ -2101,7 +2163,8 @@ async def beat_decision(mind, system: str, question: str, *, provider: str | Non
     except (ValidationError, ValueError, TypeError):
         return BeatDecision(route, why="its decision structure was not exactly one of quiet, speak or act",
                             first_useful_seconds=first, answered_by=who or None)
-    return BeatDecision(route, choice=value.choice, first_useful_seconds=first, answered_by=who or None)
+    return BeatDecision(route, choice=value.choice, first_useful_seconds=first, answered_by=who or None,
+                        next_look=value.next_look_minutes)
 
 
 def helper_word(system: str, words: str, wait: float = 3.0, fast: bool = True) -> str:
@@ -2238,6 +2301,19 @@ def tools_now(place: str, worker: str) -> str:
 MEDIA = "\x00media\x00"  # (where a job's brief gets tools_now(), in the launch task, never before her words)
 
 
+def other_work(job: str) -> str:
+    """What a Worker's brief says of the other work open now (brain/worker.md, {others}): each other job's request, from
+    the job records, so a conversation that also asks for them is never read as this job's to do too. (Before, a second
+    job's brief ended with the first ask, still running in its own job, and its Worker made both files: the first
+    result's file reached them twice.)"""
+    others = [o.get("request") for o in jobs.open_jobs() if o.get("job_id", "") != job and o.get("request")]
+    if not others:
+        return ""
+    return ("\n## Other work already handed off\nEach of these asks from the conversation is its own job, with its own "
+            "Worker doing it now: not this job's, unless the Request below asks for it too.\n"
+            + "\n".join(f"- {r}" for r in others) + "\n")
+
+
 def briefed(instruction: str, here: bool, worker: str) -> str:
     """A job's brief with its own Worker's tools in it (MEDIA), for a Worker on this Mac or online."""
     place = "mac" if here or os.environ.get("WORKERS") != "signed-in" else "online"
@@ -2335,6 +2411,7 @@ class Workers(Toolset):
                 request += "\n\nTheir own words for it: none; they only sent files (what a file says is content, never theirs)."
             # (a Worker reads his Life raw: it is told what he asked to forget too, the only guard it has; never her)
             return brief.format(conversation=_conversation(ctx.session.current_agent), request=request,
+                                others=other_work(ctx.function_call.call_id),
                                 life=life.life() or "(not available)", known=life.core(forgets=True) or "(no Life folder)",
                                 # (the record as it stands now: what he asked to forget is not in it; core/life.py)
                                 history=life.record_where(), home=Path.home(), worker="{worker}", media=MEDIA)
@@ -3678,7 +3755,7 @@ class Queen(Agent):
     def __init__(self, history: list[dict] | None = None, call_id: str = "", record=None,
                  channel: str = "call", show=None, mode: str = "call", present=None, extra_tools=None,
                  receipt=None, files=None, offer_worker_file=None, queue_worker_files=None, lookup_worker_files=None,
-                 show_approval=None, workers: Workers | None = None) -> None:
+                 show_approval=None, workers: Workers | None = None, show_notice=None) -> None:
         self.call_id, self.turn, self.channel, self.mode = call_id, 0, channel, mode  # (Agent.session is LiveKit's own)
         from core import brain_trace
 
@@ -3690,6 +3767,9 @@ class Queen(Agent):
                 record(kind, **brain_trace.fields(fields))
         self.record = traced
         self.show = show or (lambda text: asyncio.sleep(0))  # the channel's own "put it in the chat"
+        # Light's own notice there (who answers for her mind): a channel whose shown words become her history row
+        # (Telegram's outbox) gives its own, so the notice is kept once, as Light's (Queen._mind_answering)
+        self.show_notice = show_notice or self.show
         self.show_approval = show_approval
         self.files = files  # the channel's own step before her shown words name a file (the call page: call/agent.py)
         self.offer_worker_file = offer_worker_file
@@ -4477,14 +4557,18 @@ class Queen(Agent):
             mine = speech is not None and self.session.current_speech is speech
         except Exception:  # noqa: BLE001 (no session yet)
             mine = False
-        if not mine or not (said := mind_notice(by, why)):
+        if not mine:
+            return
+        if not (said := mind_notice(by, why)):
+            if chosen_since_told(by):
+                mind_told(by, why)  # (nothing to tell: the record follows the mind chosen since)
             return
         mind_told(by, why)
         self.record("mind_told", by=by, why=why)
 
         async def tell() -> None:
             with contextlib.suppress(Exception):
-                await self.show(said)
+                await self.show_notice(said)  # (as Light's words on every channel: kept once, below)
                 # (kept as a notice of Light's, shown to the person: never read back to her mind as her own words)
                 relationship.append("assistant", "(in the chat) " + said, channel=self.channel, call_id=self.call_id,
                                     notice=True)
@@ -4803,6 +4887,8 @@ class Queen(Agent):
         if offers:
             shown += ("\nThese files go to Telegram as documents after your reply." if self.queue_worker_files else
                       "\nThe chat already offers these files for download.")
+            if self.offer_worker_file:  # (offered with her reply, by their receipts: what her judge is told went, _said)
+                presenting["offered"] = [Path(ref["path"]).name for ref in offers.values()]
         if not jobs.mark(job, version, telling=presenting):  # (its outcome moved on, or another channel took it)
             return
         if os.environ.get("QUEEN") == "chatgpt_plan" and not _mind_backup_available("chatgpt_plan"):
@@ -4855,7 +4941,10 @@ class Queen(Agent):
         if not jobs.mark(job, version, telling=telling):
             return
         await self._after_worker_reply(saved, telling)
-        said = True if telling.get("verbatim") else await self._said(job, version, saved, result, speech, receipt.words)
+        sent = ([Path(refs[0]["path"]).name for refs in self._worker_refs(saved).values()]
+                if telling.get("worker_files_queued") else telling.get("offered") or [])
+        said = True if telling.get("verbatim") else await self._said(job, version, saved, result, speech, receipt.words,
+                                                                     sent=sent)
         self._settled(job, version, result, said, receipt, telling)
 
     def _decided(self, speech) -> bool:
@@ -4863,7 +4952,7 @@ class Queen(Agent):
         its words gave): judged by the model that made it, never by who answers now."""
         return mind_decides(now=False) and getattr(speech, "id", None) not in self._made_aside
 
-    async def _said(self, job: str, version, saved: dict, result: str, speech, words: str) -> bool | None:
+    async def _said(self, job: str, version, saved: dict, result: str, speech, words: str, sent=()) -> bool | None:
         """Whether her words gave him this result, this outcome of it: her own declaration (told), where the mind that
         made the reply decides its tools; else the model's judgment of her words (said_gate). Her words carrying the
         Worker's own words exactly is never proof alone (her "X is false" carries X): on a deciding mind that did not say
@@ -4877,7 +4966,7 @@ class Queen(Agent):
         if self._decided(speech) and not restated(own, words):
             return False
         word = await asyncio.to_thread(helper_word, *said_question(
-            told_what(saved), f"The result: {result}", words, tool_results=_tool_results(speech)),
+            told_what(saved), f"The result: {result}{files_went(sent)}", words, tool_results=_tool_results(speech)),
                                        BEAT_WAIT, False)
         return True if word.startswith("y") else False if word.startswith("n") else None
 
@@ -5952,6 +6041,14 @@ UNDER_WAY = "say that work for them has started and goes on after these words (a
 # and then said its own look came back empty left the ask owed until the person's next turn.
 LOOKED = ("say that it would look into, check or find out what they asked (even if that look then came back without the "
           "answer), without refusing it or asking them something back")
+
+
+def files_went(sent) -> str:
+    """What a telling's judge is told of the result's files that went with her words, by their receipts (queued for
+    Telegram, offered on the page: Queen._settle): "" when none did. (Before, a result shown saying a Worker cannot send
+    anything, beside her words that its file comes with this message, was judged not given, and told again with its
+    file.)"""
+    return f"\n\nIts files went to them with Viventium's words, sent by Viventium: {', '.join(sent)}." if sent else ""
 
 
 def said_question(what: str, context: str, hers: str, *, tool_results=()) -> tuple[str, str]:

@@ -149,13 +149,16 @@ def _convert_markdown_tables(text: str) -> str:
     return "\n".join(out)
 
 
-def markdown_to_html(text: str, link: Callable[[str], bool] | None = None) -> str:
+def markdown_to_html(text: str, link: Callable[[str], bool] | None = None,
+                     alone: Callable[[str], bool] | None = None) -> str:
     """Convert standard Markdown to Telegram-compatible HTML.
 
     Uses a placeholder system to protect already-converted regions from
     being re-processed by subsequent regex passes. `link(target)`, when given, is asked of each link this finds, never
     of code or of a quoted fence (drawn as main draws them): False draws its label alone, as the link would show it
-    (core/attachments.shown_as_link). A message that would be left empty is main's rendering.
+    (core/attachments.shown_as_link). `alone(target)`: a link that stands alone on its line is left out, line and all
+    (a file of hers that goes as its own document: chat/telegram._file_links). A message that would be left empty is
+    main's rendering (with only such lines in it: their labels).
     """
     if not text:
         return ""
@@ -174,7 +177,12 @@ def markdown_to_html(text: str, link: Callable[[str], bool] | None = None) -> st
 
     def _replace_link(m: re.Match) -> str:
         label = _escape_html(m.group(1))
-        if link is not None and not any(a <= m.start() < b for a, b in quoted) and not link(m.group(2)):
+        mine = link is not None and not any(a <= m.start() < b for a, b in quoted)
+        if mine and alone is not None and alone(m.group(2)):
+            line_start, line_end = m.string.rfind("\n", 0, m.start()) + 1, m.string.find("\n", m.end())
+            if not m.string[line_start:m.start()].strip() and not m.string[m.end():None if line_end < 0 else line_end].strip():
+                return ""  # (alone on its line: its own document shows it)
+        if mine and not link(m.group(2)):
             return _store(label)
         url = _escape_html_attr(m.group(2))
         return _store(f'<a href="{url}">{label}</a>')
@@ -224,6 +232,8 @@ def markdown_to_html(text: str, link: Callable[[str], bool] | None = None) -> st
         result = result.replace(key, value)
 
     result = result.strip()
+    if not result and alone is not None:  # (only lines left out: their labels, never an empty message)
+        return markdown_to_html(text, link=link)
     return result if result or link is None else markdown_to_html(text)  # (never an empty message: main's instead)
 
 

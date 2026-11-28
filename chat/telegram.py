@@ -412,7 +412,27 @@ async def _file_links(text: str):
         offered = set(await asyncio.to_thread(attachments.offered))
     except Exception:  # noqa: BLE001
         return plain_artifact
-    return lambda target: attachments.shown_as_link(target, offered)
+    return _Drawn(offered)
+
+
+class _Drawn:
+    """Her links in one Telegram message, given the files she offered: a link to one of her files is its label, never a
+    link (Telegram cannot open it: it goes as its own document), and alone on its line it is left out (release 60's dev
+    run: a dead "Download breakfast_ideas.txt" line above the file itself); every other link as attachments.shown_as_link
+    decides. Decided on each link's target, never on her words."""
+
+    def __init__(self, offered: set) -> None:
+        self.offered = offered
+
+    def _hers(self, target: str) -> bool:
+        found = attachments.FILE_TARGET.fullmatch(target.strip())
+        return found is not None and found.group(1) in self.offered
+
+    def __call__(self, target: str) -> bool:
+        return attachments.shown_as_link(target, self.offered) and not self._hers(target)
+
+    def alone(self, target: str) -> bool:
+        return self._hers(target)
 
 
 def _messages(text: str) -> list[str]:
@@ -538,7 +558,7 @@ class Telegram:
         # nine times, each refused). Every reply's receipt is Telegram's own: each of its messages accepted.
         self.queen = Queen(history=relationship.recent(), call_id=CHANNEL, record=note, channel=CHANNEL,
                            show=self.text, mode="chat", extra_tools=self._tools(), present=lambda: bool(self.chat_id),
-                           show_approval=self.show_approval,
+                           show_approval=self.show_approval, show_notice=self.notice,
                            receipt=self._receipt, queue_worker_files=self._queue_worker_files,
                            lookup_worker_files=self.workers.lookup_worker_files, workers=self.workers)
         self.queen.recover = self._recover
@@ -1043,11 +1063,12 @@ class Telegram:
     # -- The outbox: each message she sends, kept until Telegram has it, sent once --
 
     def _enqueue(self, item: str, speech: str | None, text: str, voice: bool = False, kept: str = "",
-                 plain: bool = False, literal: bool = False) -> None:
+                 plain: bool = False, literal: bool = False, notice: bool = False) -> None:
         """One reply of hers, as the messages Telegram will show, each with its own immutable words, destination and
         send state, kept (state/core/telegram-outbox.json) until Telegram has it or refused it. `kept` is what her
         history keeps once all of it is sent (her words, or a note of a voice note). `plain`: the channel's own words,
-        sent exactly as written (a file's name in them is never read as Markdown or as a voice control)."""
+        sent exactly as written (a file's name in them is never read as Markdown or as a voice control). `notice`:
+        Light's own notice, which her history keeps as Light's elsewhere (Telegram.notice): no row here."""
         if literal:
             # Slice without trimming or inserting formatting. Even astral characters fit Telegram's limit.
             parts = [("plain", text[i:i + 2000]) for i in range(0, len(text), 2000)]
@@ -1066,7 +1087,7 @@ class Telegram:
                 parts = []                           # its messages are kept, sent or settled, under this id: never twice)
             for n, (kind, words) in enumerate(parts):
                 out.append({"key": f"{item}:{n}", "item": item, "speech": speech, "part": n, "parts": len(parts),
-                            **({"attempt": attempt} if attempt else {}),
+                            **({"attempt": attempt} if attempt else {}), **({"notice": True} if notice else {}),
                             "kind": kind, "text": words, "kept": (kept or unbroken(text)) if n == 0 else "",
                             "chat": self.chat_id, "state": "pending", "first": now, "next": now})
         self.wake.set()
@@ -1145,7 +1166,7 @@ class Telegram:
             else:
                 try:  # Markdown as real formatting (main's Telegram HTML), else exactly as she wrote it; a link of hers to a
                     # file she never offered is its label, in this message only (attachments.shown_as_link)
-                    html = markdown_to_html(entry["text"], link=links)
+                    html = markdown_to_html(entry["text"], link=links, alone=getattr(links, "alone", None))
                     sent = await self.bot.call("sendMessage", chat_id=entry["chat"], text=html, parse_mode="HTML")
                 except RuntimeError as e:
                     if "parse" not in str(e).lower() and "entit" not in str(e).lower():
@@ -1237,7 +1258,8 @@ class Telegram:
             e["text"] if e["kind"] == "plain" else unbroken(e["text"]) for e in went)
         why = next((e.get("why") for e in parts if e.get("why")), "")
         if first:
-            if reached:  # (with her reply's own id: its row is found by it)
+            if reached and not parts[0].get("notice"):  # (with her reply's own id: its row is found by it; Light's
+                # notice is kept as Light's by the Queen, never here as her words)
                 row = relationship.append("assistant", reached, channel=CHANNEL, call_id=CHANNEL, item=item)
                 for message in self.queen.chat_ctx.items:
                     if message.type == "message" and message.id == item and row:
@@ -1561,6 +1583,12 @@ class Telegram:
         self._enqueue(key, getattr(speech, "id", None), text)
         if speech is not None:
             self.tool_items.setdefault(speech.id, []).append(key)
+
+    async def notice(self, text: str) -> None:
+        """Light's own notice (who answers for her mind: Queen._mind_answering), sent as written. Never a row of her
+        words: the Queen keeps it in her history once, as Light's notice (before, it was kept twice, and the page showed
+        it twice; the second row read back to her mind as her own words)."""
+        self._enqueue(f"light-notice-{time.time_ns()}", None, text, plain=True, notice=True)
 
     async def show_approval(self, text: str, history: str) -> None:
         owner = telegram_approvals.read(OWNER)

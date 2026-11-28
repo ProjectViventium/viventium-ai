@@ -2,6 +2,52 @@
 
 What changed for people who use Viventium AI, one entry per public release, newest first.
 
+## 0.5.0 experimental · release 61 · 28 November 2026
+
+- A background result whose file went with Viventium's reply is no longer told a second time. Before, a result saying a
+  Worker could not send anything, beside a reply that came with its file, could be judged not yet told and told again.
+  Now the check that decides it is given the names of the files that went with the reply. When two requests are under
+  way at once, each Worker's instructions also name the other requests already handed off, so each does only its own.
+  Checked old against new on the same judge models, on 21 shapes of a result given with its files: 21 of 21 right on
+  the Mac's own model (15 before) and on Grok (2 before), with every other case still right.
+- When the mind you chose is refused or has used up its plan, a check-in is decided by the backup on your Mac instead
+  of failing, so a planned wake-up still comes. A mind that is only slow is still skipped, as before. Checked with
+  stand-in minds that refuse, are at their limit or cannot be reached.
+- A conversation page left open while Viventium updated reads the new version's list of offered files, and asks for it
+  once. Before, such a page asked again every half second for about four minutes, then drew file links the old way.
+  Checked with the previous release's page against this version.
+- The note saying which mind is answering no longer says "again" about a mind you just chose. On Telegram it is sent
+  once and is not kept as part of the conversation; before, the conversation page showed it twice, and Viventium could
+  read it back as its own words.
+- Right after you approve the Grok sign-in, its row in Settings says Signed in. Before, for about 18 seconds it still
+  offered Connect.
+- Settings can disconnect the Telegram bot, so another one can be connected.
+- On Telegram, a file sent with a reply no longer comes with a dead Download line above it: the file's name stays in
+  the sentence, and the file itself follows.
+- A background account found needing a log-in is tried last for a day, and one at its limit for 30 minutes, so jobs no
+  longer wait on it first; it is still tried when nothing else answers. Its row in Settings now has Sign in, and
+  signing in again ends the wait.
+- A call set to use your ChatGPT plan now uses it while Viventium's Sign in with ChatGPT is connected. Before, that
+  choice was always refused and the call used your chosen mind. Signed out or expired, the call keeps your chosen mind,
+  and its log says why.
+- The README says what Light, Ears and Wing are, where to paste the install command, and how to update a source
+  install. The install guide describes the first hello as it is now: it sends only your name on the Mac, with the
+  time, time zone and region every request carries, and asks one short question by name. The picture of an earlier
+  greeting is out until it is retaken.
+- Check-ins keep a pace of their own. Each check-in now also decides when Viventium looks in next, from 10 minutes to
+  3 hours, as the moment and your day suggest; when it gives no time, the pace set in Settings holds, as before. A
+  wake-up check-in in the morning is followed by another look 10 to 30 minutes later, then another within the hour.
+  Checked on Grok, old against new, five runs a case: the next look was chosen and in range in 14 of 15 morning runs
+  (it could not be chosen before), the morning word was spoken as often as before, and no other check-in decided
+  worse.
+- Known limits: a conversation page open during an update still shows the previous version's page until it is reloaded
+  (it no longer keeps asking for its files meanwhile). Updating a source install over its folder keeps any file a later
+  release removes, and Viventium reads some folders by name, so such a file could still be used; a release that removes
+  one names it here, with what to delete (this release removes none). A call on your ChatGPT plan is checked with
+  stand-in sign-ins only, not yet on a real call. A morning wake-up word can be abrupt, and a later check-in can
+  guess wrongly when your day began. A check-in's next look, decided by the backup on your Mac, is checked with
+  stand-ins only.
+
 ## 0.5.0 experimental · release 60 · 28 November 2026
 
 - A result of background work comes back where you asked for it, once. Before, while the backup on your Mac answered
@@ -33,7 +79,9 @@ What changed for people who use Viventium AI, one entry per public release, newe
 - Known limits: GPT-6.2 Sol's speed and quality as Viventium's mind are not measured here yet. Asking on Telegram for a
   result to be shown on the conversation page instead is not understood yet: it comes back where you asked. A longer
   first answer after setup can take 11 to 30 seconds to be answered on Grok, and after answering a question you asked
-  first, Viventium still tells you about Wing and Settings.
+  first, Viventium still tells you about Wing and Settings. If a conversation page was open while Viventium updated,
+  reload that page once to get this version's page; until then it shows files as the previous version did, and asks
+  for the list of offered files again for a few minutes.
 
 ## 0.5.0 experimental · release 59 · 28 November 2026
 

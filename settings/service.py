@@ -576,6 +576,8 @@ def sign_in_again(want: dict) -> str:
         runtime.logged("signing an added account in again", f"{type(e).__name__}: {e}")
         return "Its sign-in could not start, so nothing changed. Try again in a moment."
     runtime.bound_sign_in(account_id)
+    from core import accounts
+    accounts.up(f"account:{account_id}")  # (signed in again: tried among the first again; found out again, it rests)
     return ""
 
 
@@ -960,6 +962,15 @@ def apply(want: dict) -> dict:
             return apply({"telegram": True})
         runtime.apply_when_idle(profile)
         return {"ok": True, "state": show()}
+    if want.get("telegram_disconnect") is True:  # (her bot let go: its token, its paired chat; Telegram off until
+        why = runtime.disconnect_telegram(env)      # another bot is connected, which turns it on: telegram_token)
+        if why:
+            return no(why)
+        try:
+            telegram_approvals.revoke()
+        except (OSError, ValueError, TypeError):
+            pass  # (its token is gone: no bot can be reached by the chat it paired)
+        return apply({"telegram": False})
     if want.get("telegram_revoke") is True:
         try:
             telegram_approvals.revoke()

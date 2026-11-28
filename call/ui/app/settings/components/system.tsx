@@ -41,7 +41,20 @@ function AddedLine({ account, added, save }: { account: Account; added: Added; s
         <span className="vs-sub">{added.label}</span>
         <span className="vs-account-end">
           {ready ? (
-            <Found on={added.use} state={added.state} ok="Logged in" />
+            <>
+              <Found on={added.use} state={added.state} ok="Logged in" />
+              {/* (found needing a log-in by Viventium, though its home still says ready: the way to do it, here) */}
+              {added.use && added.state === 'sign_in' && (
+                <button
+                  type="button"
+                  className="vs-act"
+                  aria-label={`Sign in to ${added.label}`}
+                  onClick={() => save({ account_signin: { id: account.id, account: added.id } })}
+                >
+                  Sign in
+                </button>
+              )}
+            </>
           ) : added.setup?.url ? (
             <a className="vs-act" href={added.setup.url} target="_blank" rel="noreferrer">
               {added.setup.code ? added.setup.code : 'Finish in your browser'}

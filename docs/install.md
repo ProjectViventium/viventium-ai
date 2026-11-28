@@ -42,19 +42,17 @@ On a Mac with 32 GB of memory or more, Viventium can also start with no account 
 
 ## 4. Say hello
 
-When everything is ready, the conversation opens by itself. Viventium greets you and points out its controls in the
-menu bar. Type, or press the microphone and talk.
+When everything is ready, the conversation opens by itself. Viventium asks you one short question, by name, and waits
+for your answer: type, or press the microphone and talk. Then, unless your answer starts some work, it tells you about
+Wing and Settings, lighting each in the menu bar's panel.
 
 Some browsers keep a page silent until you click on it. If yours does, the page shows **Turn on sound**: click it
 (or click anywhere on the page, or start typing) and Viventium says hello. It waits for you rather than speak
 into silence.
 
-For that first hello, Viventium looks at what your Mac shows anyone who sits at it: your name on the Mac, which Mac it
-is, the time and time zone, your languages and region, and the names of the apps in your Dock and in Applications. It
-asks for no permission and opens no file. These facts go to the mind Viventium runs on (the one you connected, or the
-model on this Mac) so its first hello can be about you.
-
-![The conversation, with Viventium's first greeting](images/hello.jpg)
+For that first question, Viventium uses your name on the Mac (or your connected account's name), with the time, the
+time zone and the region your Mac is set to. It asks for no permission and opens no file. These go to the mind
+Viventium runs on (the one you connected, or the model on this Mac).
 
 ## The V in the menu bar
 
@@ -106,5 +104,8 @@ Still stuck? The window's one line names the step; include it when you ask for h
 
 - **Start at login:** Settings, System.
 - **Turn off:** the power control in the V panel. Viventium rests until you open the app again.
+- **Installed from source:** the viventium-ai-main folder holds Viventium's conversation history and settings, so keep
+  it where it is. `./vx up` in that folder starts Viventium, and `./vx backup` keeps a checked copy outside it.
 - **Remove:** turn off start at login, turn Viventium off, then move Viventium AI from Applications to the Bin. Your Life notes,
-  sign-ins and Viventium's own data folder stay on the Mac until you delete them.
+  sign-ins and Viventium's own data folder (installed from source, the viventium-ai-main folder) stay on the Mac until
+  you delete them.

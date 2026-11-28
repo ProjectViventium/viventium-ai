@@ -683,6 +683,23 @@ def waiting(schedule_id: str, occurrence: str, why: str = "", running: bool | No
                     e["running"] = running
 
 
+def passed(schedule_id: str, occurrence: str, now: dt.datetime | None = None) -> None:
+    """A beat's ring that came before her own next look (core/routines.NEXT): taken from the inbox and the beat moved
+    to its next turn, with no line kept and nothing asked of her mind (her short tick through the day would otherwise
+    fill KEPT_RUNS with rings she let pass)."""
+    now = local(instant(now or dt.datetime.now()))
+    with _locked("list", "due") as (items, inbox):
+        inbox[:] = [e for e in inbox if not (e["id"] == schedule_id and same(e["occurrence"], occurrence))]
+        item = next((i for i in items if i["id"] == schedule_id), None)
+        if item is None or not item["repeat"]:
+            return
+        wall = _wall(item)
+        past = max(instant(now), instant(occurrence, item.get("zone", "")))
+        while _at(item, wall) <= past:
+            wall = _next(wall, item)
+        item["when"] = wall.isoformat(timespec="seconds")
+
+
 def done(schedule_id: str, occurrence: str, now: dt.datetime | None = None, how: str = "", result: str = "",
          kept: dict | None = None, **extra) -> None:
     """This occurrence was acted on, and how it ended (told, quiet, work, owed, failed, ...): a one-off leaves, a

@@ -53,8 +53,15 @@ export function picture(href: string | undefined, offered: Offered): boolean {
   return drawn(href, offered) === 'file' && offered.pictures.has(href!.slice(FILE.length));
 }
 
-/** Asks her agent for her whole set until it answers with it (answered; her agent not in the room yet, or not
- *  answering yet: asked again `wait` ms later), at most `tries` times, while `here()`. True once it answered. */
+/** What the page's ask sends her agent (RPC "viv.files"): that this page reads which files are pictures, so her agent
+ *  answers {ids, pictures}. A page that sends nothing (one from before pictures) gets the plain list (call/agent.py
+ *  FilesTold.answer). */
+export const ASK = JSON.stringify({ pictures: true });
+
+/** Asks her agent for her whole set until it answers (her agent not in the room yet, or not answering yet: asked again
+ *  `wait` ms later), at most `tries` times, while `here()`. True once it answered with her set. An answer in a shape this
+ *  page cannot read is still her answer: never asked again, so every file link stays a link, as before her set is known
+ *  (release 60: a page opened before the update asked again every half second until its tries ran out). */
 export async function ask(
   answer: () => Promise<string>,
   got: (ids: string[], pictures: string[]) => void,
@@ -63,16 +70,21 @@ export async function ask(
   tries = 240
 ): Promise<boolean> {
   for (let n = 0; n < tries && here(); n++) {
+    let reply: string;
     try {
-      const set = answered(JSON.parse(await answer()));
-      if (set) {
-        if (here()) got(set.ids, set.pictures);
-        return true;
-      }
+      reply = await answer();
     } catch {
-      // (asked again)
+      await new Promise((resolve) => setTimeout(resolve, wait)); // (asked again)
+      continue;
     }
-    await new Promise((resolve) => setTimeout(resolve, wait));
+    let set: ReturnType<typeof answered>;
+    try {
+      set = answered(JSON.parse(reply));
+    } catch {
+      set = undefined;
+    }
+    if (set && here()) got(set.ids, set.pictures);
+    return set !== undefined;
   }
   return false;
 }

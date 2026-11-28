@@ -138,6 +138,32 @@ function TelegramPairing({ paired, save }: { paired: boolean; save: Save }) {
   );
 }
 
+// Her bot let go (its token leaves your Keychain, its paired chat is forgotten, Telegram turns off): the token field
+// comes back, for another bot.
+function TelegramDisconnect({ save }: { save: Save }) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <span className="vs-kv">
+      <span className="vs-hint">Use another bot</span>
+      <button
+        type="button"
+        className="vs-quiet-btn"
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          try {
+            await save({ telegram_disconnect: true });
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? 'Disconnecting…' : 'Disconnect this bot'}
+      </button>
+    </span>
+  );
+}
+
 export function Channels({ settings, save }: { settings: Settings; save: Save }) {
   const [open, setOpen] = useState<'telegram' | 'web' | 'phone' | ''>('');
   const [forgot, setForgot] = useState(false); // (every paired phone unpaired just now: at once, no restart)
@@ -221,6 +247,7 @@ export function Channels({ settings, save }: { settings: Settings; save: Save })
                 />
               </span>
               {tg.id && (tg.on || tg.paired) && <TelegramPairing paired={tg.paired} save={save} />}
+              <TelegramDisconnect save={save} />
             </>
           ) : (
             <TelegramToken save={save} />

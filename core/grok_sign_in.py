@@ -662,6 +662,13 @@ def _said() -> dict:
         return {}
 
 
+def kept_since(t: float) -> bool:
+    """Whether a sign-in of hers was kept after `t` (its own record: _approved's last step), never read from the Keychain:
+    what the page last learned before then is no longer true (settings/runtime own_presence)."""
+    said = _said()
+    return said.get("state") == "signed_in" and float(said.get("at") or 0) > t
+
+
 def _start_of(pid) -> str:
     """When a process started, as the system says it ("" when it is not there): with its pid, which process it is."""
     try:

@@ -107,9 +107,8 @@ def ensure() -> None:
     beat = next((r for r in every if "awake_from" in r), {})
     day = beat.get("awake_from", "")
     for routine in every:
-        if "every_minutes" in routine:
-            schedules.set_routine(routine["id"], bool(routine["on"]), routine["every_minutes"], routine["awake_from"],
-                                  routine["awake_to"])
+        if "every_minutes" in routine:  # (the clock's short tick; her own pace is decided at each beat: TICK)
+            schedules.set_routine(routine["id"], bool(routine["on"]), TICK, routine["awake_from"], routine["awake_to"])
             continue
         why = inside_day(routine["at"], day, beat.get("awake_to", "")) if routine["on"] else ""
         schedules.set_routine(routine["id"], bool(routine["on"]) and not why, at=routine["at"], until=day)
@@ -188,6 +187,60 @@ KEEP_TRIES = 30  # days a promise's tries stay in front of her after its last on
 def _work_file():
     from core import state
     return state.STATE_ROOT / "core" / "beat-work.json"
+
+
+# Her own pace, never a fixed grid: the clock rings a short TICK through her hours, and each beat's decision says when
+# she looks around next (next_look_minutes, kept in NEXT_BOUNDS); a ring before that passes with no model call. With
+# no choice kept (her first beat, a decision that gave none, her own-turn mind for now, a lost file), the page's pace
+# is the next look, as before.
+TICK = 5  # minutes between the clock's rings through her hours
+NEXT_BOUNDS = (10, 180)  # minutes: the soonest and the latest next look she may choose
+NEXT_EARLY = 60  # s: a ring this close before her next look is hers (the clock rings on its minute)
+
+
+def _next_file():
+    from core import state
+    return state.STATE_ROOT / "core" / "heartbeat-next.json"
+
+
+def next_look() -> dict:
+    """Her next look as kept ({} when none: the next ring is hers)."""
+    try:
+        kept = json.loads(_next_file().read_text())
+        return kept if isinstance(kept, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _not_yet(now: dt.datetime) -> str:
+    """Why this ring passes: before her own next look ("" when it is hers)."""
+    at = next_look().get("at")
+    try:
+        when = dt.datetime.fromisoformat(at) if at else None
+    except (TypeError, ValueError):
+        return ""
+    if when is None or (when - now.astimezone(when.tzinfo) if when.tzinfo else when - now).total_seconds() <= NEXT_EARLY:
+        return ""
+    return f"her next look is at {when.strftime('%H:%M')}"
+
+
+def _keep_next(item: dict, minutes, now: dt.datetime) -> dict:
+    """Her next look, kept for the next ring (and a restart): her own minutes in NEXT_BOUNDS, else the page's pace.
+    One that falls outside her hours is none: the first ring of her next day is hers."""
+    from core import schedules
+    from core.state import private_file
+    by = "her" if isinstance(minutes, int) and not isinstance(minutes, bool) else "pace"
+    pace = next((r.get("every_minutes") for r in read() if r["id"] == item.get("routine")), None) or 30
+    chose = max(NEXT_BOUNDS[0], min(NEXT_BOUNDS[1], minutes)) if by == "her" else int(pace)
+    when = now + dt.timedelta(minutes=chose)
+    kept = {"minutes": chose, "by": by, "asked": minutes if by == "her" else None, "set": now.isoformat(timespec="seconds"),
+            "beat": f"{item.get('id', '')}:{item.get('occurrence', '')}",
+            "at": when.isoformat(timespec="seconds") if schedules.awake(item, when) else None}
+    tmp = _next_file().with_suffix(".tmp")
+    with private_file(tmp, "w") as f:
+        json.dump(kept, f)
+    os.replace(tmp, _next_file())
+    return kept
 
 
 def _promise(request: str) -> str:
@@ -700,12 +753,9 @@ BEAT_AGAIN = 120.0
 CHECKIN_WAIT = 30.0
 
 
-async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int) -> dict:
-    """The mind's typed quiet/speak/act choice. Keep the routine facts, wording and action permissions.
-    Only an explicitly unsupported route uses the legacy word gate. Invalid structure fails without a guess.
-    """
+async def _gate_question(queen, told: str, sees: str) -> tuple[str, str, str]:
+    """The one question a beat's choice is asked (its system words, the question, how she feels now)."""
     from brain import feelings
-    from brain.queen import beat_decision
     system, _ = _gate_system()
     talk = "\n".join(f"{who}: {' '.join(words.split())[:GATE_CHARS]}" for who, words, _ in _conversation(queen)[-GATE_TALK:])
     # (how she feels now, the same note her reply gets: the words ask her to choose as the moment and how she feels
@@ -714,6 +764,32 @@ async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int)
     question = (f"What Viventium is given at a heartbeat:\n{told}\n\nIts recent conversation:\n"
                 f"{talk or '(none yet)'}\n\nWhat it can see right now:\n{sees}"
                 + (f"\n\nHow Viventium feels right now:\n{feels}" if feels else ""))
+    return system, question, feels
+
+
+async def _next_after_note(queen, item: dict, told: str, sees: str) -> None:
+    """Her next look after a beat that said Dreaming's note (it made no choice of its own): the same typed decision,
+    asked once right after, its next look alone kept (the morning's word is said: its choice is not acted on). Nobody
+    waits on it; with none, the page's pace (_keep_next). The common morning: Dreaming has ended long before the day
+    begins, so a note is waiting at its first beat, and the next look after the wake-up word is decided here."""
+    from brain.queen import beat_decision
+    try:
+        system, question, _ = await _gate_question(queen, told, sees)
+        decision = await beat_decision(queen.session.llm, system, question, wait=CHECKIN_WAIT)
+    except Exception:  # noqa: BLE001 (never in the way of the beat: the page's pace)
+        log.exception("next look after the note")
+        return
+    item["next_look"] = decision.next_look
+    queen.record("beat", routine=item["routine"], next_look_after="note", choice_not_acted=decision.choice,
+                 next_look_asked=decision.next_look, **({"why": decision.why} if not decision.choice else {}))
+
+
+async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int) -> dict:
+    """The mind's typed quiet/speak/act choice. Keep the routine facts, wording and action permissions.
+    Only an explicitly unsupported route uses the legacy word gate. Invalid structure fails without a guess.
+    """
+    from brain.queen import beat_decision
+    system, question, feels = await _gate_question(queen, told, sees)
     decision = await beat_decision(queen.session.llm, system, question, wait=CHECKIN_WAIT)
     if decision.again and not decision.choice:
         queen.record("beat", routine=item["routine"], beat_id=f"{item['id']}:{item['occurrence']}" if item.get("id") and item.get("occurrence") else "",
@@ -723,6 +799,7 @@ async def _gate_turn(queen, item: dict, told: str, sees: str, started_turn: int)
             return _stopped(why)
         decision = await beat_decision(queen.session.llm, system, question, wait=CHECKIN_WAIT)
     choice, why = decision.choice, decision.why
+    item["next_look"] = decision.next_look  # (her own next look, kept as the beat ends: _keep_next)
     if decision.structure.mechanism == "legacy_word":
         answer = await _ask(queen, system, question)
         choice = declared(answer)
@@ -899,6 +976,9 @@ def beat(queen, item: dict) -> asyncio.Task:
 
     @auth.unattended
     async def run() -> None:
+        if _not_yet(now()):  # (before her own next look: this ring passes, nothing asked)
+            await asyncio.to_thread(schedules.passed, item["id"], item["occurrence"])
+            return
         outcome, extra, tokens = {"how": "call"}, {}, {}
         note, note_state = {}, ""
         direct = {}
@@ -940,6 +1020,8 @@ def beat(queen, item: dict) -> asyncio.Task:
                             note = note if note_state else {}
                         if said_note is not None:
                             outcome = said_note
+                            if said_note.get("how") == "told":  # (her words went out: her next look, chosen after them)
+                                await _next_after_note(queen, item, told, facts(queen) + morning)
                         elif stale := _still(item, started_turn, queen):
                             outcome = _stopped(stale)
                         else:
@@ -965,9 +1047,15 @@ def beat(queen, item: dict) -> asyncio.Task:
                     note_state = "told" if await said_about(outcome.get("result", ""), note["text"]) else "kept"
                 except Exception:  # noqa: BLE001 (no verdict: delivered, not known to be said)
                     note_state = "unverified"
+        try:  # (her next look, as she chose it at this beat, else the page's pace: never in the way of the beat)
+            ahead = await asyncio.to_thread(_keep_next, item, item.get("next_look"), now())
+        except Exception:  # noqa: BLE001
+            log.exception("next look")
+            ahead = {}
         queen.record("beat", routine=item["routine"], beat_id=f"{item['id']}:{item['occurrence']}" if item.get("id") and item.get("occurrence") else "",
                      how=how, **({"why": outcome["why"]} if outcome.get("why") else {}),
-                     **({"tokens": tokens} if tokens else {}))
+                     **({"tokens": tokens} if tokens else {}),
+                     **({"next_look": {k: ahead.get(k) for k in ("minutes", "by", "asked", "at")}} if ahead else {}))
         if how == "work" and requests:  # (each a try of its promise, kept by the promise)
             try:
                 await asyncio.to_thread(tried, {k: v for k, v in requests.items() if v}, dt.datetime.now())

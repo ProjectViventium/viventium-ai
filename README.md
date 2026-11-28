@@ -6,29 +6,33 @@ conversation goes on.
 
 By **xPerfect.ai** · Light 0.5, experimental · [Fair Source](#licence-and-security) · [Changelog](CHANGELOG.md)
 
-![Viventium's first hello on a new Mac: it greets you in its own words and lights each control as it explains it](docs/images/hello.jpg)
+Light is Viventium 0.5: a lightweight rebuild that runs on your Mac.
+
+![The brain view: each light is a recorded step](docs/images/brain.jpg)
 
 ## What it does
 
 - **One conversation, three ways in.** Talk, type, or message it on Telegram: it is the same conversation. Interrupt
   any time.
-- **It says hello first.** After setup it greets you in its own words and shows you its controls. Nothing is scripted.
+- **It says hello first.** After setup it asks you one short question by name, and shows you its controls once you
+  answer. Nothing is scripted.
 - **Work in the background.** Ask for a file, research or a long task. A Worker does it while you keep talking, asks
   before it changes anything, and can be allowed for a whole job with one choice.
 - **Memory that is yours.** Your notes live in a Life folder on your Mac. Ask what it remembers, correct it, or have it
   forget.
 - **A mind of its own.** A Subconscious that thinks between answers, a simulated mood that shapes how it talks,
   reminders, staying aware of what matters while you are away, and sleep and dreaming at night.
-- **A brain you can watch.** Every light is a real step it just took. Nothing is simulated.
+- **A brain you can watch.** Every light is a real step it just took, shown as it happens.
 
-| Its brain at work | The V in the menu bar |
-| --- | --- |
-| ![The brain view: each light is a recorded step](docs/images/brain.jpg) | ![The menu-bar panel explains each control](docs/images/menu-bar.jpg) |
+![The V in the menu bar: its panel explains each control](docs/images/menu-bar.jpg)
+
+In the V panel, **Ears** turns the microphone on so you can talk to it, and off again. **Wing** has it reply only when
+you address it, so it can listen in while you talk with others.
 
 ## Install
 
 Viventium AI is experimental. Today it installs from source with one command; the Mac app you drag into Applications
-is built and waits for its signature.
+is built and waits for its signature. Open Terminal (in Applications, Utilities) and paste:
 
 ```bash
 curl -L https://github.com/ProjectViventium/viventium-ai/archive/refs/heads/main.tar.gz | tar xz
@@ -45,6 +49,17 @@ sign-in in under three minutes; a Mac that also downloads local models and a loc
   macOS blocks it on other people's Macs. It will be on the
   [releases page](https://github.com/ProjectViventium/viventium-ai/releases) once it is signed.
   [What its first run looks like, step by step](docs/install.md).
+
+### Updating a source install
+
+There is no automatic update yet. Turn Viventium off from the V panel, then run the same two lines again in Terminal,
+from the folder that holds viventium-ai-main. The download replaces Viventium's code in that folder and leaves its
+conversation history and settings (its state and logs folders) as they are; `./vx up` then installs what changed and
+starts the new version. Reload any Viventium page that was open.
+
+Known limit: a file that a later release removes stays in the folder, and Viventium reads some of its folders by name
+(its xPerfect patches and its prompts), so such a leftover could still be used. A release that removes one of those
+says so in the [changelog](CHANGELOG.md), with what to delete.
 
 ## What you need
 
@@ -64,8 +79,8 @@ sign-in in under three minutes; a Mac that also downloads local models and a loc
 Viventium runs on your Mac, and your memory stays on your Mac: conversation history, Life notes and settings are files
 there, and sign-ins and keys are kept in the macOS Keychain. When a part is set to an online service, that service
 receives what the request needs, through your own account: your words for an online mind (with the time, and the
-time zone and region your Mac is set to, so it knows where you are; for its first hello, also your languages and
-the names of the apps in your Dock and Applications), the text to speak for an online voice, the task and its files
+time zone and region your Mac is set to, so it knows where you are; for its first hello, also your name on the
+Mac), the text to speak for an online voice, the task and its files
 for an online Worker. Settings shows which parts are online, and each can be moved
 to this Mac where it has the memory for it. It is fully private and offline only when every part runs on this Mac.
 

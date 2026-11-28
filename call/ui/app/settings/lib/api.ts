@@ -238,6 +238,7 @@ export type Change = Partial<{
   telegram_approvals: boolean;
   telegram_token: string;
   telegram_revoke: boolean;
+  telegram_disconnect: boolean;
   feelings: boolean;
   nature: string;
   band: { id: string; rest?: number; on?: boolean; now?: number; pace?: number };

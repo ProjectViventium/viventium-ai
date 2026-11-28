@@ -57,6 +57,6 @@ anything there, and follow it.
 
 ## Conversation so far
 {conversation}
-
+{others}
 ## Request
 {request}

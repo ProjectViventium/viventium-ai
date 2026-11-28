@@ -183,6 +183,22 @@ def up(name: str, seen: float | None = None) -> None:
             known[route(name)] = {"answered": round(seen, 3)}
 
 
+# How long a route last found needing a log-in, or at its limit, rests before a job tries it among the first again (it is
+# still tried, after every other route: Workers.routes). Before, each job lost seconds on an account found needing a
+# log-in days earlier. A log-in again (settings: an account's sign-in) or an answer clears it.
+RESTS = {"sign_in": 24 * 3600.0, "limited": 30 * 60.0}
+
+
+def resting(name: str, now: float | None = None) -> bool:
+    """Whether this route was last found needing a log-in (within a day) or at its limit (within 30 minutes): typed, as
+    down() kept it, never a provider's words."""
+    last = states().get(route(name)) or {}
+    rest = RESTS.get(str(last.get("state") or ""))
+    if rest is None:
+        return False
+    return (time.time() if now is None else now) - float(last.get("seen") or 0) < rest
+
+
 def states() -> dict:
     """Each account not answering, as {"plan:claude": {"state": "limited", "since": t, "seen": t}}; the rest answer."""
     try:
