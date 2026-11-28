@@ -32,21 +32,24 @@ WHOLE_KEPT = 2 * 86400     # a whole-text file no carried message names is remov
 
 
 def append(role: str, text: str, channel: str, call_id: str = "", files: list[dict] | None = None,
-           heard: bool = False, item: str = "", file_offer: str = "", once: bool = False, at: float | None = None) -> int:
+           heard: bool = False, item: str = "", file_offer: str = "", once: bool = False, at: float | None = None,
+           notice: bool = False) -> int:
     """One message into the log. Her replies are kept exactly as she wrote them, their outer spaces and line breaks too
     (literal text); his words and Worker results as they came, trimmed at their ends. The log is
     only ever appended to, so the row a message lands on is its one identity for her memory (every
     reader carries it, a change names it): returned, 0 when nothing was kept. heard: words only heard (Wing,
     Listen only), maybe not said to her, maybe someone else's: a summary says so. item: the live conversation's own id
     of the message (its row is found by it). file_offer links a delivery receipt to an existing offer.
-    at: the event's time when a call queues the write off its audio loop."""
+    at: the event's time when a call queues the write off its audio loop. notice: a notice of Light's shown to the
+    person (who answers for her mind, and why), kept with its line and read back to her mind as a fact, not her words."""
     if not text or not text.strip() or role not in ("user", "assistant", "worker"):
         return 0
     line = (json.dumps({"t": time.time() if at is None else at, "role": role, "text": text if role == "assistant" else text.strip(),
                         # (exact: a rounded time could fall before a channel's last look and never reach it)
                         "channel": channel, "call_id": call_id,
                         **({"files": files} if files else {}), **({"heard": True} if heard else {}),
-                        **({"item": item} if item else {}), **({"file_offer": file_offer} if file_offer else {})}) + "\n").encode()
+                        **({"item": item} if item else {}), **({"file_offer": file_offer} if file_offer else {}),
+                        **({"notice": True} if notice else {})}) + "\n").encode()
     with closed_file(LOG, "ab") as f:  # (his words: his alone from the start, its folder too; core/state.py)
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # (one append at a time: each one's row counted exactly)
         if once and item:

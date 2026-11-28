@@ -20,6 +20,7 @@ log = logging.getLogger("viventium.memory")
 # Nothing on her reply path waits unbounded (a reply hung past the lane's 240 s): a memory call
 # gives way after these seconds, and she answers without it (it may still finish in its own thread).
 RECALL_WAIT = float(os.environ.get("MEMORY_RECALL_WAIT", "6"))
+RECALL_ROOM = 0.5  # s of RECALL_WAIT left for her search to put its halves' results together and return
 CHANGE_WAIT = float(os.environ.get("MEMORY_CHANGE_WAIT", "12"))
 RECALL_LATE = ("Their memory did not answer in time just now, so nothing from it is here: answer from this "
                "conversation, and if it matters tell them you could not look in their memory just now; never guess "
@@ -150,7 +151,8 @@ async def recall(ctx: RunContext, keywords: str, only: str = "") -> str:
         only: Only when they say where to look ("only in my plans"): those Life folders, comma-separated,
             e.g. "Plans". Usually empty.
     """
-    found = await _within(RECALL_WAIT, memory.search, keywords, _list(only))
+    # (each half inside the wait, so what one found is given when the other is slow: core/memory._search)
+    found = await _within(RECALL_WAIT, memory.search, keywords, _list(only), max(0.5, RECALL_WAIT - RECALL_ROOM))
     return RECALL_LATE if found is None else found
 
 

@@ -10,7 +10,7 @@ import {
   useSessionMessages,
 } from '@livekit/components-react';
 import { AgentSessionView_01 } from '@/components/agents-ui/blocks/agent-session-view-01';
-import { CallMode, QuietLine, talkNow, useCallMode, useQuiet } from '@/components/app/call-mode';
+import { CallMode, ModeToast, useCallMode, useModeToast } from '@/components/app/call-mode';
 import { useEarlier } from '@/components/app/earlier';
 import { useOfferedFiles } from '@/components/app/file-link';
 import { useLive } from '@/components/app/live';
@@ -64,7 +64,9 @@ export function ViewController({
   // One conversation: typing works at once; the microphone makes it a call in the same room, and only then does how
   // she is with you while talking (Talk, Wing, Listen only) show.
   const talking = isConnected && isMicrophoneEnabled;
-  const quiet = useQuiet(mode, setMode, talking, agent.state === 'speaking');
+  // (his newest piece of speech-to-text: a new one brings the mode's toast while Wing or Listen only is on)
+  const heard = messages.filter((m) => m.type === 'userTranscript').at(-1)?.id;
+  const toast = useModeToast(mode, setMode, talking, agent.state === 'speaking', heard);
   const waiting: Record<string, string> = {
     talk: 'Viventium is listening. Say hello.',
     wing: 'Viventium is beside you, quiet until spoken to.',
@@ -75,17 +77,7 @@ export function ViewController({
     <>
       {/* (its own presence: in "wait" mode below, a child leaving shows only the leaving ones until it has gone) */}
       <AnimatePresence>
-        {talking && quiet && (
-          <QuietLine
-            key="call-quiet"
-            quiet={quiet}
-            modes={modes}
-            onTalk={() => {
-              setMode('talk');
-              talkNow(session.room);
-            }}
-          />
-        )}
+        {talking && toast && <ModeToast key="mode-toast" mode={toast} />}
       </AnimatePresence>
       <AnimatePresence mode="wait">
         {talking && <CallMode key="call-mode" mode={mode} modes={modes} onChange={setMode} />}

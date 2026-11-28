@@ -150,7 +150,8 @@ def _error(status, code="", identifier=None, body=None):
 
 async def _pause(grant, headers=None):
     retry_after = (headers or {}).get("retry-after", "")
-    seconds = int(retry_after) if retry_after.isascii() and retry_after.isdecimal() and len(retry_after) < 9 else 60
+    # (the provider's own retry time; without one, the connection's own rest, longer while the limit lasts)
+    seconds = int(retry_after) if retry_after.isascii() and retry_after.isdecimal() and len(retry_after) < 9 else None
     with suppress(sign_in.NotSignedIn):
         await asyncio.to_thread(sign_in.connection.pause, grant, seconds)
 
@@ -182,23 +183,37 @@ class _Stream:
                 if close := getattr(events, "aclose", None):
                     await close()
 
+    async def _failed(self, code):
+        """The plan's own failure, by its documented code: paused while limited, its health said, and the person told."""
+        status = STREAM_STATUS.get(code, -1)
+        if status == 429:
+            await _pause(self.grant)
+        await asyncio.to_thread(_health, status)
+        if status == 401:
+            # Prepare the next request. The current turn may have shown text.
+            with suppress(sign_in.SignInError):
+                await asyncio.to_thread(sign_in.connection.mark_refused, self.grant)
+        from brain.queen import _scrubbed
+        raise _scrubbed(_error(status, code, self.stream.response.headers.get("x-request-id")),
+                        self.grant.token) from None
+
     async def events(self):
         calls = []
-        async for event in self.stream:
+        stream = aiter(self.stream)
+        while True:
+            try:
+                event = await anext(stream)
+            except StopAsyncIteration:
+                break
+            except openai.APIError as error:
+                # (an event whose data carries "error" is raised by the SDK's own stream parser before it reaches us:
+                # a bare APIError with that error as its body. Its documented code goes the way the event's would.)
+                if isinstance(error, (openai.APIStatusError, openai.APIConnectionError)):
+                    raise
+                await self._failed(error.code)
             if event.type in ("response.failed", "error", "response.incomplete"):
                 info = getattr(getattr(event, "response", None), "error", None)
-                code = getattr(info or event, "code", None)
-                status = STREAM_STATUS.get(code, -1)
-                if status == 429:
-                    await _pause(self.grant)
-                await asyncio.to_thread(_health, status)
-                if status == 401:
-                    # Prepare the next request. The current turn may have shown text.
-                    with suppress(sign_in.SignInError):
-                        await asyncio.to_thread(sign_in.connection.mark_refused, self.grant)
-                from brain.queen import _scrubbed
-                raise _scrubbed(_error(status, code, self.stream.response.headers.get("x-request-id")),
-                                self.grant.token) from None
+                await self._failed(getattr(info or event, "code", None))
             if event.type == "response.output_item.done" and event.item.type == "function_call":
                 item = event.item
                 if item.name not in self.names or getattr(item, "namespace", NAMESPACE) not in (None, NAMESPACE):
@@ -211,6 +226,8 @@ class _Stream:
                     yield call
                 yield event
                 await asyncio.to_thread(_health, None)
+                with suppress(sign_in.SignInError):  # (it answered: its next limit rests from the first pause again)
+                    await asyncio.to_thread(sign_in.connection.answered, self.grant)
                 return
             if event.type == "response.refusal.delta":
                 if self.helper:

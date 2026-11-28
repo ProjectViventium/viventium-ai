@@ -521,7 +521,7 @@ def _with_answers(hits: list[dict]) -> None:
             hit["lines"] = sorted([*hit.get("lines", []), *extra])
 
 
-def search(words: str, only: tuple[str, ...] = ()) -> str:
+def search(words: str, only: tuple[str, ...] = (), wait: float | None = None) -> str:
     """The recall tool: the word search over all of Life (core/life.search), or only the folders his words limit it to,
     then the nearest passages by meaning from files it did not already show, each with where it comes from and when.
     She asked for it, so she reads and judges the result; what it could not search is said, never taken as "nothing
@@ -533,19 +533,46 @@ def search(words: str, only: tuple[str, ...] = ()) -> str:
     if only and not within:
         return f"There is no folder called {', '.join(only)} in their Life: nothing was searched."
     with life.one_pass():  # (one recall: the change list, the record and each summary read once)
-        return _search(words, within)
+        return _search(words, within, wait)
 
 
-def _search(words: str, within: tuple[str, ...]) -> str:
+def _by_words(words: str, within: tuple[str, ...], issues: set[str]) -> tuple[list[dict], int]:
+    hits, matched = life.search_hits(words, only=within, issues=issues)
+    _with_answers(hits)
+    return hits, matched
+
+
+def _search(words: str, within: tuple[str, ...], wait: float | None = None) -> str:
+    """Her recall's two halves at once, each in its own thread on this recall's pass: the word search over all of Life
+    and the search by meaning. In sequence, a word search slowed by a busy Mac took all of recall's time, and the search
+    by meaning (tens of milliseconds) never ran. With `wait`, what each half found by then is given, and a half that
+    did not finish says so (never "nothing there"); it may still finish in its own thread, unread."""
     issues: set[str] = set()
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="recall")
     try:
-        hits, matched = life.search_hits(words, only=within, issues=issues)
-        _with_answers(hits)
-        seen = {hit["path"] for hit in hits}
-        meaning = nearest(words, k=6, under=within, timeout=2.0)
-        near = [hit for hit in meaning if hit[1] not in seen][:3]
+        words_half = pool.submit(contextvars.copy_context().run, _by_words, words, within, issues)
+        meaning_half = pool.submit(contextvars.copy_context().run, nearest, words, k=6, under=within,
+                                   timeout=2.0 if wait is None else max(0.1, min(2.0, wait)))
+    finally:
+        pool.shutdown(wait=False)
+    end = None if wait is None else time.monotonic() + wait
+
+    def left() -> float | None:
+        return None if end is None else max(0.0, end - time.monotonic())
+    try:
+        hits, matched = words_half.result(timeout=left())
+    except TimeoutError:
+        hits, matched, issues = [], 0, {"it did not finish in time"}  # (a set of its own: the late half still writes)
     except life.Unreadable as e:
         return life.UNREADABLE_NOTE.format(why=e)
+    try:
+        meaning = meaning_half.result(timeout=left())
+    except TimeoutError:
+        meaning = Near(answered=False, why="it did not finish in time")
+    except life.Unreadable as e:
+        return life.UNREADABLE_NOTE.format(why=e)
+    seen = {hit["path"] for hit in hits}
+    near = [hit for hit in meaning if hit[1] not in seen][:3]
     why = "" if answered(meaning) else getattr(meaning, "why", "")
     # Explicit recall has no caller's character limit: reserve enough room for
     # every source and its complete correction, unlike the automatic turn note.

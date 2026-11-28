@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from livekit.agents import Agent, APIConnectionError, APIConnectOptions, APIStatusError, RunContext, function_tool
+from livekit.agents import Agent, APIConnectionError, APIConnectOptions, APIStatusError, APITimeoutError, RunContext, function_tool
 from livekit.agents import llm as lk_llm
 from livekit.agents.types import FlushSentinel
 from livekit.agents.voice.agent import ModelSettings
@@ -269,6 +269,9 @@ _STEP: contextvars.ContextVar = contextvars.ContextVar("mind_step", default=None
 # is asked. Callers mark their own requests with nobody_waiting() (a request made directly) or
 # reply_nobody_waits() (a reply made with generate_reply).
 _WAITING: contextvars.ContextVar = contextvars.ContextVar("nobody_waiting", default=None)
+# Whether the request now asked is for words she speaks on a call (Queen.llm_node: her channel is the call), so the call's
+# own mind answers it when one is configured (queen_llm: CALL_QUEEN); a typed reply on the same page keeps her chosen mind.
+_SPOKEN: contextvars.ContextVar = contextvars.ContextVar("spoken", default=False)
 
 
 @contextlib.contextmanager
@@ -314,6 +317,34 @@ def _chain(minds: list) -> "lk_llm.FallbackAdapter":
 # the backup, and the backup's words are held for FRESH_GRACE seconds: the fresh ask's first word in that time is the
 # reply; else the backup's, as before. The worst case grows by at most FRESH_GRACE over the backup's own first word.
 FRESH_GRACE = float(os.environ.get("FRESH_GRACE") or 12)
+
+# Her backup on this Mac is loaded before it is needed, only when her chain is really heading to it: on a call, the
+# call's mind and the cloud mind asked beside it have both given no word BACKUP_PRELOAD seconds after the hedge (a cold
+# load of her backup took 6.6 to 11.3 s on her own record, and the backup is asked when both have had their wait); on a
+# read reply, when the fresh ask goes out. Never for one late mind. It is Ollama's own preload (a request with no
+# prompt), sent as its own request and never tied to the reply: a reply a cloud mind then answers closes its backup
+# request, and a request hung up mid-load ends Ollama's load with it. The server's own keep-alive says how long the
+# model then stays. One at a time; it ends by itself.
+BACKUP_PRELOAD = float(os.environ.get("BACKUP_PRELOAD") or 2.0)
+_PRELOADING = threading.Lock()
+
+
+def _preload_backup(row: dict, began: float) -> None:
+    url = os.environ.get("MEMORY_URL", "").rstrip("/").removesuffix("/v1")
+    if not url or not row.get("backup") or not _PRELOADING.acquire(blocking=False):
+        return
+    row["backup"].update(preload="sent", preload_at_seconds=round(time.monotonic() - began, 3))
+    model = row["backup"]["model"]
+
+    def send() -> None:
+        try:
+            with httpx.Client(timeout=httpx.Timeout(5.0, read=180.0), follow_redirects=False, trust_env=False) as client:
+                client.post(url + "/api/generate", json={"model": model}).raise_for_status()
+        except Exception:  # noqa: BLE001 (the backup's own request still loads it when it is asked)
+            log.warning("her backup's preload did not finish")
+        finally:
+            _PRELOADING.release()
+    threading.Thread(target=send, name="backup-preload", daemon=True).start()
 
 
 def _step_waits_past(seconds: float) -> None:
@@ -403,13 +434,15 @@ class _ObservedStream(lk_llm.LLMStream):
                 self.ended = True
 
 
-def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped="", attempts=(), slots=("primary", "backup")):
+def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped="", attempts=(), slots=("primary", "backup"),
+                   sibling: tuple[str, str] | None = None, hedge: float | None = None, announce: tuple[str, ...] | None = None):
     """Metadata only. Read backup readiness at its start and first token/failure; never hold a word."""
     if record is None:
         return mind
     chat, close = mind.chat, mind.aclose
     pending = set()
-    client = httpx.AsyncClient(timeout=0.4, follow_redirects=False, trust_env=False) if backup == "local" else None
+    on_this_mac = backup == "local"  # (her backup is this Mac's own model: the one a preload loads)
+    client = httpx.AsyncClient(timeout=0.4, follow_redirects=False, trust_env=False) if on_this_mac else None
 
     async def closed():
         try:
@@ -434,8 +467,8 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                                    os.environ.get("QUEEN_FALLBACK_MODEL", "gpt-6.1-sol"),
                           "outcome": "not_attempted", "readiness": "unknown", "load_seconds": None,
                           "load_time_source": "not_reported"} if backup else None,
-               **({"sibling": {"provider": SIBLING["provider"], "model": model, "outcome": "not_attempted"}}
-                  if "sibling" in slots else {}),
+               **({"sibling": {"provider": (sibling or (SIBLING["provider"], model))[0], "model": (sibling or ("", model))[1],
+                               "outcome": "not_attempted"}} if "sibling" in slots else {}),
                "context_chars": sum(len(value) for item in kwargs["chat_ctx"].items
                    for value in (getattr(item, "text_content", None), getattr(item, "arguments", None),
                                  getattr(item, "output", None)) if isinstance(value, str))}
@@ -479,7 +512,8 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                             marked["answered_by"] = dict(row["answered_by"])
                         if is_fallback or primary_skipped:  # (a mind with a backup: the person is told who answers)
                             by = "backup" if is_backup else "sibling" if data is row.get("sibling") else "chosen"
-                            _answering(by, primary_skipped or _why(row["primary"]), speech)
+                            if announce is None or by in announce:  # (a call's own chain: only this Mac's backup is news)
+                                _answering(by, primary_skipped or _why(row["primary"]), speech)
                         if is_backup:
                             sample()
                     if chunk.usage is not None:
@@ -508,8 +542,9 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
             finally:
                 if is_backup and len(samples) < 2:
                     sample()
-                if token is not None:
-                    _MIND_ATTEMPT.reset(token)
+                if token is not None:  # (a hedged stream is stepped from more than one task: its first step set this
+                    with contextlib.suppress(ValueError):  # in that task's own context, gone with it; nothing to undo here)
+                        _MIND_ATTEMPT.reset(token)
 
         async def keep():
             if samples:  # (two when the backup's attempt ended; one when the step gave up while it still streamed)
@@ -580,11 +615,15 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                             yield chunk
                         return
                     slot = slots[attempts.index(llm)] if llm in attempts else "backup"
+                    if slot == "sibling" and row["sibling"].get("hedged"):  # (asked beside the first already: never twice)
+                        raise APIConnectionError("the next mind was asked beside the first already", retryable=False)
                     if slot != slots[0]:
                         _another_mind_asked()
                         row[slot]["window_from_seconds"] = round(time.monotonic() - began, 3)  # (its own window)
                     first = row[slots[0]]
-                    if (slot == "backup" and slots == ("primary", "backup") and (_WAITING.get() or {}).get("fresh")
+                    if hedge is not None and slot == slots[0] and "sibling" in slots:
+                        events = _hedged(generate, llm, attempts[slots.index("sibling")])
+                    elif (slot == "backup" and slots == ("primary", "backup") and (_WAITING.get() or {}).get("fresh")
                             and first.get("outcome") in ("timeout", "empty") and first.get("taken_seconds") is not None):
                         events = _fresh_or_backup(generate, attempts[0], llm)
                     else:
@@ -597,6 +636,8 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                     word of either, by then the chosen mind's if it has one. Only the one served is measured and announced."""
                     began_race = time.monotonic()
                     row["fresh"] = {"provider": provider, "model": model, "outcome": "not_attempted"}
+                    if on_this_mac:  # (her chain heads to the backup: loaded whoever answers)
+                        _preload_backup(row, began)
                     held: asyncio.Queue = asyncio.Queue()
                     end = object()
 
@@ -644,6 +685,99 @@ def _observed_mind(mind, record, provider, model, *, backup="", primary_skipped=
                             yield chunk
                     async for chunk in attempt(served(), row["fresh"], QUEEN_BACKUP_WAIT, began_race):
                         yield chunk
+                async def _hedged(generate, chosen, other):
+                    """On a call (the person waits on her voice): the call's mind, and once it has given no word for `hedge`
+                    seconds, the next cloud mind beside it, both open; the first of the two to give a word answers and the
+                    other is closed. One that ends or fails before a word leaves the other (asked at once if it was not yet).
+                    Both failed: the chain's backup, never the next mind asked twice."""
+                    began_hedge = time.monotonic()
+                    streams = {"primary": attempt(generate(llm=chosen), row["primary"], QUEEN_BACKUP_WAIT).__aiter__()}
+                    held: dict[str, list] = {"primary": []}
+                    pending = {asyncio.ensure_future(streams["primary"].__anext__()): "primary"}
+                    failed: dict[str, BaseException] = {}
+                    winner = None
+                    # (each of the two has the chain's own wait for its first word, QUEEN_BACKUP_WAIT, kept here whatever its
+                    # provider's client does: one that streams its thinking and never a word is closed at it)
+                    deadline = {"primary": began_hedge + QUEEN_BACKUP_WAIT}
+                    preload_at = began_hedge + hedge + BACKUP_PRELOAD if on_this_mac and "backup" in slots else None
+
+                    def beside() -> None:  # (the next cloud mind, asked now)
+                        deadline["sibling"] = time.monotonic() + QUEEN_BACKUP_WAIT
+                        row["sibling"]["hedged"] = True
+                        _another_mind_asked()
+                        row["sibling"]["window_from_seconds"] = round(time.monotonic() - began, 3)
+                        streams["sibling"] = attempt(generate(llm=other), row["sibling"], QUEEN_BACKUP_WAIT).__aiter__()
+                        held["sibling"] = []
+                        pending[asyncio.ensure_future(streams["sibling"].__anext__())] = "sibling"
+                    try:
+                        while winner is None:
+                            if not pending:
+                                if "sibling" not in streams:
+                                    beside()
+                                    continue
+                                raise failed.get("primary") or failed.get("sibling") or APIConnectionError(
+                                    "neither mind gave a word", retryable=False)
+                            now = time.monotonic()
+                            waits = [deadline[name] - now for name in pending.values()]
+                            if "sibling" not in streams:
+                                waits.append(began_hedge + hedge - now)
+                            elif preload_at is not None:
+                                waits.append(preload_at - now)
+                            left = max(0.0, min(waits)) if waits else None
+                            done, _ = await asyncio.wait(set(pending), timeout=left, return_when=asyncio.FIRST_COMPLETED)
+                            if not done:
+                                now = time.monotonic()
+                                for task, name in list(pending.items()):
+                                    if now >= deadline[name]:  # (no first word in its time: closed, its row says so)
+                                        pending.pop(task)
+                                        task.cancel()
+                                        with contextlib.suppress(BaseException):
+                                            await task
+                                        with contextlib.suppress(BaseException):
+                                            await streams[name].aclose()
+                                        row[name].update(outcome="timeout", wait_seconds=QUEEN_BACKUP_WAIT)
+                                        failed[name] = APITimeoutError(f"{name}: no first word in {QUEEN_BACKUP_WAIT:g} s",
+                                                                       retryable=False)
+                                if "sibling" not in streams and now >= began_hedge + hedge:
+                                    beside()
+                                elif preload_at is not None and "sibling" in streams and now >= preload_at:
+                                    preload_at = None  # (both asked, neither has a word yet)
+                                    _preload_backup(row, began)
+                                continue
+                            for task in done:
+                                name = pending.pop(task)
+                                try:
+                                    chunk = task.result()
+                                except StopAsyncIteration:
+                                    failed.setdefault(name, APIConnectionError(f"{name} ended with no word", retryable=False))
+                                    continue
+                                except Exception as error:  # noqa: BLE001 (its own row says what; the other answers)
+                                    failed[name] = error
+                                    continue
+                                held[name].append(chunk)
+                                if winner is None and chunk.has_response():
+                                    winner = name
+                                elif winner is None:
+                                    pending[asyncio.ensure_future(streams[name].__anext__())] = name
+                    finally:
+                        for task in pending:
+                            task.cancel()
+                        for task in pending:
+                            with contextlib.suppress(BaseException):
+                                await task
+                        for name, it in streams.items():
+                            if name != winner:
+                                with contextlib.suppress(BaseException):
+                                    await it.aclose()
+                    try:
+                        for chunk in held[winner]:
+                            yield chunk
+                        async for chunk in streams[winner]:
+                            yield chunk
+                    finally:
+                        with contextlib.suppress(BaseException):
+                            await streams[winner].aclose()
+
                 try:
                     stream._try_generate = measured
                 except (AttributeError, TypeError):
@@ -977,7 +1111,63 @@ def _sibling(provider: str, model: str) -> str:
     return ""
 
 
+# Seconds the call's own mind has for its first word before the next cloud mind is asked beside it (_hedged): GPT-6.1
+# Sol's first token on his calls was within 5.57 s in 9 of 10 (110 call turns), so the next mind is asked in about 1 in 10.
+CALL_HEDGE = float(os.environ.get("CALL_HEDGE") or 5.5)
+
+
 def queen_llm(record=None):
+    """Her mind as every channel builds it (_text_mind). With a call's own mind configured (CALL_QUEEN, CALL_QUEEN_MODEL,
+    optional CALL_QUEEN_EFFORT and CALL_QUEEN_URL: config, his profile's), the words she speaks on a call are asked of that
+    mind first, her chosen mind next as the call's cloud fallback (asked beside it after CALL_HEDGE without a first word),
+    and her declared backup on this Mac last; her typed replies on the same page, and every other channel, keep her
+    chosen mind. Which a request is: _SPOKEN, set by Queen.llm_node from her channel (typed structure, never her words)."""
+    text = _text_mind(record)
+    call = _call_mind(record)
+    if call is None:
+        return text
+    chat, close = text.chat, text.aclose
+
+    def routed(**kwargs):
+        return (call.chat if _SPOKEN.get() else chat)(**kwargs)
+
+    async def closed():
+        try:
+            await close()
+        finally:
+            await call.aclose()
+    text.chat, text.aclose = routed, closed
+    return text
+
+
+def _call_mind(record=None):
+    """The chain that answers a call when one is configured: the call's mind, her chosen mind (when it is online and
+    usable), her declared backup. None when none is configured, when it is her chosen mind itself, or when its key is
+    off or missing (a call keeps her chosen mind then, and the log says why)."""
+    provider, model = os.environ.get("CALL_QUEEN", ""), os.environ.get("CALL_QUEEN_MODEL", "")
+    chosen, chosen_model = os.environ.get("QUEEN", "ollama"), os.environ.get("QUEEN_MODEL", "")
+    if not provider or not model or (provider, model) == (chosen, chosen_model):
+        return None
+    if (key := KEY_OF.get(provider, "")) and not _usable(key):
+        log.warning("the call's mind (%s %s) has no usable key (%s): calls keep her chosen mind", provider, model, key)
+        return None
+    first = _mind(provider, model, os.environ.get("CALL_QUEEN_EFFORT") or None, os.environ.get("CALL_QUEEN_URL") or None,
+                  backed=True)
+    chosen_key = KEY_OF.get(chosen, "")
+    after = (_mind(chosen, chosen_model, os.environ.get("QUEEN_EFFORT"), os.environ.get("QUEEN_URL"), backed=True)
+             if chosen != "ollama" and (not chosen_key or _usable(chosen_key)) else None)
+    backup = _mind_backup_available(chosen)
+    second = _mind_backup(backup)
+    chain = [first, *([after] if after is not None else []), *([second] if second is not None else [])]
+    if len(chain) == 1:
+        return _observed_mind(first, record, provider, model)
+    slots = ("primary", *(("sibling",) if after is not None else ()), *(("backup",) if second is not None else ()))
+    return _observed_mind(_chain(chain), record, provider, model, backup=backup if second is not None else "",
+                          attempts=tuple(chain), slots=slots, sibling=(chosen, chosen_model) if after is not None else None,
+                          hedge=CALL_HEDGE if after is not None else None, announce=("backup",))
+
+
+def _text_mind(record=None):
     """Her mind, and its declared backup. With QUEEN_FALLBACK=local and an online mind, this Mac's own model
     (the helper server's, MEMORY_URL) answers whenever the online one is limited, refused or not answering:
     LiveKit's FallbackAdapter sets the first aside, tries it again in the background and takes it back when it
@@ -1200,13 +1390,23 @@ def connection_name(provider: str) -> str:
 TOLD = STATE_ROOT / "core" / "mind-told.json"
 
 
+def _chosen_now() -> list[str]:
+    """Her chosen mind as configured (QUEEN, QUEEN_MODEL): what a notice was about."""
+    return [os.environ.get("QUEEN", "ollama"), os.environ.get("QUEEN_MODEL", "")]
+
+
 def mind_notice(by: str, why: str) -> str:
-    """What the person is told when the mind answering them changes, from facts only ("" when they already know)."""
+    """What the person is told when the mind answering them changes, from facts only ("" when they already know). A
+    notice that another mind answers is about the mind chosen then and the reason given then: once another mind is
+    chosen, or the reason it gives is another, they are told again."""
     try:
-        told = json.loads(TOLD.read_text()).get("told", "chosen")
+        said = json.loads(TOLD.read_text())
+        told, about, given = said.get("told", "chosen"), said.get("mind"), said.get("why")
     except (OSError, ValueError, AttributeError):
-        told = "chosen"
-    if by == told:
+        told, about, given = "chosen", None, None
+    reason = WHY_NOW.get(why, WHY_NOW["down"])
+    if by == told and (by == "chosen" or ((about is None or about == _chosen_now())
+                                          and (not given or WHY_NOW.get(given, WHY_NOW["down"]) == reason))):
         return ""
     chosen, backup = mind_names()
     if by == "chosen":
@@ -1216,10 +1416,11 @@ def mind_notice(by: str, why: str) -> str:
     return f"{backup} is answering for now: {chosen} {WHY_NOW.get(why, WHY_NOW['down'])}."
 
 
-def mind_told(by: str) -> None:
+def mind_told(by: str, why: str = "") -> None:
     with contextlib.suppress(OSError):
         TOLD.parent.mkdir(parents=True, exist_ok=True)
-        TOLD.write_text(json.dumps({"told": by, "at": round(time.time(), 1)}))
+        TOLD.write_text(json.dumps({"told": by, "mind": _chosen_now(), **({"why": why} if why else {}),
+                                    "at": round(time.time(), 1)}))
 
 
 # Minds measured to decide their own tools (her own hand_off_to on recorded asks), until the settings catalog says so per mind
@@ -1258,6 +1459,16 @@ def mind_decides(now: bool = True) -> bool:
     except Exception:  # noqa: BLE001 (the catalog is the page's: never a failed turn)
         pass
     return os.environ.get("QUEEN", "ollama") != "ollama" and model in DECIDES
+
+
+def request_decides() -> bool:
+    """Whether a request made now is answered by a mind that decides its own tools: never while her backup on this Mac
+    answers for her, nor a ChatGPT plan request that carries none of the plan's authority (a result's telling): its chain
+    hands that one to the backup (_observed_mind, "not_authorized"). What a request asks of the mind (call told) follows
+    who answers it; her tools stay as her configured mind's (mind_decides(now=False))."""
+    if not mind_decides(now=True):
+        return False
+    return not (os.environ.get("QUEEN") == "chatgpt_plan" and plan_auth.current.get() is None)
 
 
 def _speech_now(queen=None):
@@ -3737,6 +3948,7 @@ class Queen(Agent):
             {"wait": None, "later": True, "fresh": True, "answered_by": None}
             if getattr(speech, "_person_words", False) and getattr(self, "channel", "call") != "call" else None)
         waiting = _WAITING.set(mark)
+        spoken = _SPOKEN.set(getattr(self, "channel", "") == "call")
         stream = self._llm_node(chat_ctx, tools, model_settings)
         try:
             while True:
@@ -3749,6 +3961,8 @@ class Queen(Agent):
             await stream.aclose()
             with contextlib.suppress(ValueError):  # (closed from another context: the mark goes with it)
                 _WAITING.reset(waiting)
+            with contextlib.suppress(ValueError):
+                _SPOKEN.reset(spoken)
 
     async def _llm_node(self, chat_ctx, tools, model_settings):
         # A draft of her reply, made by LiveKit at his words' transcript while his turn may not have ended yet (Queen._draft):
@@ -4078,7 +4292,8 @@ class Queen(Agent):
             if self._words.get("answer_checked"):
                 return
             self._words["answer_checked"] = True
-        word = await self._said_started(gate["words"], hers, retry=not choice, what=UNDER_WAY if choice == "answer" else STARTED)
+        word = await self._said_started(gate["words"], hers, retry=not choice,
+                                        what=UNDER_WAY if choice == "answer" else LOOKED if choice == "act" else STARTED)
         if speech.interrupted or self.turn != gate["turn"]:  # (he spoke again, or talked over her, while it was asked)
             if choice == "act":
                 self._owe(gate["words"], "he spoke again meanwhile")
@@ -4229,13 +4444,15 @@ class Queen(Agent):
             mine = False
         if not mine or not (said := mind_notice(by, why)):
             return
-        mind_told(by)
+        mind_told(by, why)
         self.record("mind_told", by=by, why=why)
 
         async def tell() -> None:
             with contextlib.suppress(Exception):
                 await self.show(said)
-                relationship.append("assistant", "(in the chat) " + said, channel=self.channel, call_id=self.call_id)
+                # (kept as a notice of Light's, shown to the person: never read back to her mind as her own words)
+                relationship.append("assistant", "(in the chat) " + said, channel=self.channel, call_id=self.call_id,
+                                    notice=True)
         self._track_aside(asyncio.create_task(tell()))
 
     def _track_aside(self, task: asyncio.Task) -> asyncio.Task:
@@ -4271,6 +4488,9 @@ class Queen(Agent):
                                  extra={"worker_result": "earlier", **row}, **when)
         elif item["role"] == "system":  # (a note of the history itself: how much older conversation is not carried)
             chat_ctx.add_message(role="system", content=item["text"], extra={"history_note": True}, **when)
+        elif item.get("notice"):  # (Light's own notice to the person, shown in the chat: a fact, never her words)
+            chat_ctx.add_message(role="system", content="Shown to the person in the chat, a notice from Light, not your "
+                                 "words: " + item["text"].removeprefix("(in the chat) "), extra={"notice": True, **row}, **when)
         else:
             if item["role"] == "assistant":
                 if text := words_only(item["text"]):
@@ -4526,7 +4746,10 @@ class Queen(Agent):
             say = TELL
         # (his own words for it last: a count, a form or a place he asked for are his to keep)
         asked = f'\n(They asked for it in these words: "{" ".join(p["text"] for p in saved["asked"])}")' if saved.get("asked") else ""
-        declares = mind_decides(now=False) and "told" in self._tool_ids()
+        # (asked of the mind that answers this telling: a backup is never asked to call told, nor given it; its words are
+        # judged instead, Queen._said)
+        backup_answers = mind_decides(now=False) and not request_decides()
+        declares = request_decides() and "told" in self._tool_ids()
         route = (saved.get("fallback") or "").split(",")[-1] or saved.get("harness", "")
         # The handoff already carries the person's quiet, channel and time choices.
         # An attended result still owed to them must reach the conversation.
@@ -4537,6 +4760,9 @@ class Queen(Agent):
         presenting = {**(telling if same else {}), "version": version, "channel": self.channel, "state": "presenting",
                       "at": time.time(), "decides": declares}
         saved = await self._retry_publications(saved)
+        # (what was said elsewhere since this channel last heard, as his turn gets it: his latest words on any channel,
+        # and a reply there that already gave this result, are in her context when she writes; she decides what to say)
+        await self._catch_up(lambda *_, **__: None)
         offers = await self._offer_result(saved)
         shown = attachments.result_view(result, offers)
         if offers:
@@ -4552,6 +4778,8 @@ class Queen(Agent):
             speech = self.session.say(attachments.result_view(words or result, offers))
         else:
             speech = self._reply(instructions=f"{say}{FINISH_REQUEST}{mark}\n{shown}{asked}", tools=tools)
+            if backup_answers:  # (her backup's reply, as one made while it answers for her: its words are judged)
+                self._aside_made(speech)
         self.telling = (speech, [(job, result, version)])
         jobs.mark(job, version, telling={**presenting, "speech": speech.id})
         await speech
@@ -5583,6 +5811,12 @@ def told_what(job: dict) -> str:
 # 10 replies that said a search was under way (Grok on a subscription).
 STARTED = "say that it is doing, or has started, what they asked"
 UNDER_WAY = "say that work for them has started and goes on after these words (a search, a Worker or a task under way)"
+# After a late "act" (the check came after her first words): did her words take the ask up, so the work follows them as
+# their next step? Her words promising to look into it are that, even when her own look then came back without the
+# answer; refusing it, or asking them something back first, is not. Asked STARTED instead, a reply that promised a look
+# and then said its own look came back empty left the ask owed until the person's next turn.
+LOOKED = ("say that it would look into, check or find out what they asked (even if that look then came back without the "
+          "answer), without refusing it or asking them something back")
 
 
 def said_question(what: str, context: str, hers: str, *, tool_results=()) -> tuple[str, str]:

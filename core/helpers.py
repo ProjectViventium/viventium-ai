@@ -21,6 +21,7 @@ chatgpt_plan: Light's selected ChatGPT grant, inside an attended turn.
 mac: this Mac's helper server.
 """
 import asyncio
+import subprocess
 import json
 import logging
 import os
@@ -370,15 +371,18 @@ def _claude_request(model, messages, max_tokens, json_out, think, effort) -> dic
 
 
 async def _claude_process(args: list[str], env: dict, folder: str, prompt: str = "") -> tuple[int, dict]:
-    proc = await asyncio.create_subprocess_exec(*args, env=env, cwd=folder, stdin=asyncio.subprocess.PIPE,
-                                               stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    """The Claude CLI started and read in a thread: asyncio's own subprocess transport starts a process on the event
+    loop, and on a busy Mac one start of this CLI held a call's loop for 166 ms. Cancelled (its wait ran out), it is
+    killed and reaped, as before."""
+    proc = await asyncio.to_thread(subprocess.Popen, args, env=env, cwd=folder, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     try:
-        raw, _ = await proc.communicate(prompt.encode())
+        raw, _ = await asyncio.to_thread(proc.communicate, prompt.encode())
     finally:
-        if proc.returncode is None:
+        if proc.poll() is None:
             with suppress(ProcessLookupError):
                 proc.kill()
-            await proc.wait()
+            await asyncio.to_thread(proc.wait)
     try:
         result = json.loads(raw)
     except ValueError:

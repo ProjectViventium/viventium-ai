@@ -538,14 +538,19 @@ def add_account(want: dict) -> str:
     if entry is None or entry.get("plan") not in PLAN_PROVIDER:
         return "That provider has no subscription to add."
     provider = PLAN_PROVIDER[entry["plan"]]
-    count = len([a for a in connected() if a.get("provider") == provider])
-    try:
-        made = runtime.xperfect("POST", "/v1/provider-accounts", {"provider": provider, "label": f"{entry['product']} {count + 2}",
-                                                                  "auth_method": "subscription", "platform_support": "supported"})
-        runtime.xperfect("POST", f"/v1/provider-accounts/{made['account_id']}/setup")
-    except (RuntimeError, KeyError) as e:  # (xPerfect's own words go to her settings log, never to the page)
-        runtime.logged(f"adding a {provider} account", f"{type(e).__name__}: {e}")
-        return f"Another {entry['product']} account could not be added. Try again in a moment."
+    with runtime.locked("add-account"):  # (one add at a time: a second click while one is made waits, then sees it)
+        accounts = [a for a in connected() if a.get("provider") == provider]
+        if any(a.get("status") == "connecting" for a in accounts):  # (one of them is still signing in: finish that first)
+            return (f"Another {entry['product']} account is still signing in. Finish it in your browser, or it ends by "
+                    "itself in a few minutes.")
+        try:
+            made = runtime.xperfect("POST", "/v1/provider-accounts", {"provider": provider, "label": f"{entry['product']} {len(accounts) + 2}",
+                                                                      "auth_method": "subscription", "platform_support": "supported"})
+            runtime.xperfect("POST", f"/v1/provider-accounts/{made['account_id']}/setup")
+        except (RuntimeError, KeyError) as e:  # (xPerfect's own words go to her settings log, never to the page)
+            runtime.logged(f"adding a {provider} account", f"{type(e).__name__}: {e}")
+            return f"Another {entry['product']} account could not be added. Try again in a moment."
+    runtime.bound_sign_in(str(made["account_id"]))
     return ""
 
 
@@ -560,6 +565,7 @@ def sign_in_again(want: dict) -> str:
     except RuntimeError as e:
         runtime.logged("signing an added account in again", f"{type(e).__name__}: {e}")
         return "Its sign-in could not start, so nothing changed. Try again in a moment."
+    runtime.bound_sign_in(account_id)
     return ""
 
 

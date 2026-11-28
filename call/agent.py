@@ -850,7 +850,7 @@ async def call(ctx: JobContext) -> None:
             note("mode", mode=queen.call_mode)
             timed()  # (his first words' timing, before he speaks)
             if can_tell():
-                jobs.here(channel_now())
+                await disk.run(jobs.here, channel_now())  # (its file lock off the call's loop, in order: core/offloop)
             if opening and voice["opened"] and not voice["greeted"] and not said_here["any"] and queen.first_speech is None:
                 voice["greeted"] = True  # nothing said yet: it opens as a call does, once
                 await queen.greet([], [])
@@ -956,6 +956,30 @@ async def call(ctx: JobContext) -> None:
             page_listening.set()
 
     ctx.room.register_text_stream_handler("viv.transcript-ready", transcript_ready)
+
+    # Stop, from the page's chat while she thinks or answers (agent-control-bar.tsx): her turn ends now, by LiveKit's own
+    # interrupt, forced (a reply she is asked to stop is never one that may not be cut). Her Workers' jobs go on.
+    stopping: set[asyncio.Task] = set()
+
+    async def stop_now() -> None:
+        first = queen.first_speech
+        if first is not None and not first.done():
+            first.interrupt(force=True)
+        try:
+            await session.interrupt(force=True)
+        except RuntimeError as e:  # (her session is not running: nothing to stop)
+            note("error", source="stop", error=f"{type(e).__name__}: {str(e)[:160]}")
+            return
+        note("stopped", by="page")
+
+    def stop_asked(_reader, identity: str) -> None:
+        if (who := linked()) is not None and identity != who:
+            return  # (only the person she is with stops her)
+        task = asyncio.create_task(stop_now())
+        stopping.add(task)
+        task.add_done_callback(stopping.discard)
+
+    ctx.room.register_text_stream_handler("viv.stop", stop_asked)
     sound_on = asyncio.Event()  # (the page said her voice can be heard there now: core/page_sound.py)
 
     def sound_told(_reader, identity: str) -> None:
@@ -1017,8 +1041,8 @@ async def call(ctx: JobContext) -> None:
         await ctx.room.local_participant.send_text(json.dumps(
             [_on_page(item) for item in earlier if item.get("role") in ("user", "assistant")]), topic="viv.history")
 
-    if can_tell():
-        jobs.here(channel_now())  # (Telegram leaves what nobody owns to this conversation from now on)
+    if can_tell():  # (Telegram leaves what nobody owns to this conversation from now on; off the loop, in order)
+        await disk.run(jobs.here, channel_now())
     try:  # work from earlier calls: results to tell now, Workers still running
         ready, running = await workers.resume(queen, page_approvals=bool(approval_recipients()))
     except Exception as e:  # xPerfect unreachable: the call still works, without old results
@@ -1087,10 +1111,12 @@ async def call(ctx: JobContext) -> None:
             await asyncio.sleep(20)
             try:
                 here, local_page = can_tell(), bool(approval_recipients())
+                # (its file lock and disk off the call's loop, in order with every other status write: on a busy disk the
+                # lock's own folder check held her loop for 552 ms in the middle of a call)
                 if here:
-                    jobs.here(channel_now())
+                    await disk.run(jobs.here, channel_now())
                 else:
-                    jobs.gone()
+                    await disk.run(jobs.gone)
                     if not local_page:
                         continue
                 ready, running = await workers.resume(queen, page_approvals=local_page, approvals_only=not here)

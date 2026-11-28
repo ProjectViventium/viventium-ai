@@ -301,13 +301,12 @@ export function AgentSessionView_01({
             isChatOpen={isChatOpen}
             isConnected={session.isConnected}
             waiting={!agent.isConnected}
+            busy={agentState === 'thinking' || agentState === 'speaking'}
             onDeviceError={({ source, error }) => {
               if (source === 'microphone') setMicProblem(microphoneSentence(error));
             }}
             onDisconnect={session.end}
           />
-          {/* Said plainly on screen as well as by her (the AI notice) */}
-          <p className="text-muted-foreground pt-2 text-center text-xs">Viventium is an AI.</p>
         </div>
       </motion.div>
     </section>

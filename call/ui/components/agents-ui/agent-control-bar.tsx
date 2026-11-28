@@ -8,11 +8,12 @@ import {
   Paperclip,
   SendHorizontal,
   Settings,
+  Square,
   Volume2,
   VolumeX,
 } from 'lucide-react';
 import { type MotionProps, motion } from 'motion/react';
-import { useChat } from '@livekit/components-react';
+import { useChat, useRoomContext } from '@livekit/components-react';
 import { AgentDisconnectButton } from '@/components/agents-ui/agent-disconnect-button';
 import { AgentTrackControl } from '@/components/agents-ui/agent-track-control';
 import {
@@ -75,6 +76,10 @@ interface AgentChatInputProps {
   chatOpen: boolean;
   /** Viventium has not joined yet (a typed chat): nothing can be sent to nobody, and the box says it waits. */
   waiting?: boolean;
+  /** She is thinking or answering: with nothing typed, the send button is Stop. */
+  busy?: boolean;
+  /** Stop her turn now. */
+  onStop?: () => void;
   onSend?: (
     message: string,
     files: File[],
@@ -88,6 +93,8 @@ interface AgentChatInputProps {
 function AgentChatInput({
   chatOpen,
   waiting = false,
+  busy = false,
+  onStop,
   onSend = async () => {},
   onWantOpen,
   className,
@@ -101,6 +108,10 @@ function AgentChatInput({
   const [notice, setNotice] = useState('');
   const [sent, setSent] = useState(0);
   const isDisabled = waiting || isSending || (message.trim().length === 0 && files.length === 0);
+  // While she thinks or answers and nothing is typed, the same button stops her (words typed meanwhile still send:
+  // a new message takes her turn as before).
+  const stops =
+    busy && !!onStop && !waiting && !isSending && message.trim().length === 0 && files.length === 0;
   // Ready once Viventium has joined: the box is where you type, at once.
   useEffect(() => {
     if (!waiting && chatOpen) inputRef.current?.focus();
@@ -234,24 +245,38 @@ function AgentChatInput({
           }}
           className="field-sizing-content max-h-16 min-h-8 flex-1 resize-none [scrollbar-width:thin] py-2 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
-        <Button
-          size="icon"
-          type="button"
-          disabled={isDisabled}
-          variant={isDisabled ? 'secondary' : 'default'}
-          title={
-            isSending
-              ? files.length
-                ? `Sending… ${Math.round(sent * 100)}%`
-                : 'Sending...'
-              : 'Send'
-          }
-          aria-label="Send"
-          onClick={handleButtonClick}
-          className="self-end disabled:cursor-not-allowed"
-        >
-          {isSending ? <Loader className="animate-spin" /> : <SendHorizontal />}
-        </Button>
+        {stops ? (
+          <Button
+            size="icon"
+            type="button"
+            variant="default"
+            title="Stop"
+            aria-label="Stop"
+            onClick={onStop}
+            className="self-end"
+          >
+            <Square className="fill-current" />
+          </Button>
+        ) : (
+          <Button
+            size="icon"
+            type="button"
+            disabled={isDisabled}
+            variant={isDisabled ? 'secondary' : 'default'}
+            title={
+              isSending
+                ? files.length
+                  ? `Sending… ${Math.round(sent * 100)}%`
+                  : 'Sending...'
+                : 'Send'
+            }
+            aria-label="Send"
+            onClick={handleButtonClick}
+            className="self-end disabled:cursor-not-allowed"
+          >
+            {isSending ? <Loader className="animate-spin" /> : <SendHorizontal />}
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -332,6 +357,8 @@ export interface AgentControlBarProps extends UseInputControlsProps {
   isChatOpen?: boolean;
   /** Viventium has not joined the chat yet: the text box waits (a typed chat). */
   waiting?: boolean;
+  /** She is thinking or answering: the chat's send button is Stop while nothing is typed. */
+  busy?: boolean;
   /**
    * What the leave button says (a typed chat is not a call).
    *
@@ -376,6 +403,7 @@ export function AgentControlBar({
   isChatOpen = false,
   isConnected = false,
   waiting = false,
+  busy = false,
   leaveLabel = 'End call',
   saveUserChoices = true,
   onDisconnect,
@@ -385,6 +413,11 @@ export function AgentControlBar({
   ...props
 }: AgentControlBarProps & ComponentProps<'div'>) {
   const { send } = useChat();
+  const room = useRoomContext();
+  // Stop: her turn ends now (her agent's "viv.stop": LiveKit's own interrupt of what she is thinking or saying).
+  const stop = useCallback(() => {
+    room.localParticipant.sendText('stop', { topic: 'viv.stop' }).catch(() => undefined);
+  }, [room]);
   const speakerOff = useSpeakerOff();
   const publishPermissions = usePublishPermissions();
   const [isChatOpenUncontrolled, setIsChatOpenUncontrolled] = useState(isChatOpen);
@@ -447,6 +480,8 @@ export function AgentControlBar({
         <AgentChatInput
           chatOpen={isChatOpen || isChatOpenUncontrolled}
           waiting={waiting}
+          busy={busy}
+          onStop={stop}
           onSend={handleSendMessage}
           onWantOpen={openChat}
           className={cn(variant === 'livekit' && '[&_button]:rounded-full')}

@@ -21,6 +21,9 @@ let given = CommandLine.arguments.count > 1 && !CommandLine.arguments[1].hasPref
 let built = Bundle.main.object(forInfoDictionaryKey: "ViventiumRoot") as? String
 let appSource = Bundle.main.object(forInfoDictionaryKey: "ViventiumSource") as? String ?? ""
 let packaged = Bundle.main.object(forInfoDictionaryKey: "ViventiumPackaged") as? Bool == true
+// Which Viventium this app is (typed, written by vx into its Info.plist): "dev", the copy that is always a new user's
+// experience, shows a small DEV mark on her logo; absent or anything else is his own.
+let instance = Bundle.main.object(forInfoDictionaryKey: "ViventiumInstance") as? String ?? "live"
 let home = FileManager.default.homeDirectoryForCurrentUser
 let installed = home.appendingPathComponent(".viventium-light", isDirectory: true)
 let root = packaged ? installed.path : [given, built].compactMap { $0 }.first {
@@ -30,13 +33,35 @@ let root = packaged ? installed.path : [given, built].compactMap { $0 }.first {
 // Opened by a person (Finder, Launchpad, Spotlight, the Dock), not started by vx or launchd: it opens her, then goes.
 let opened = given == nil && !CommandLine.arguments.contains(where: { $0.hasPrefix("--") })
 let openNote = Notification.Name("ai.viventium.light.open")  // (a running mark is asked to open her: one app, one mark)
-let openNoteObject: String? = packaged ? root : nil
-let page = "http://localhost:\(ProcessInfo.processInfo.environment["UI_PORT"] ?? "3400")"
+// The dev copy's own parts (its Info.plist's ViventiumInstanceFile, kept by tools/bench/dev): the vx that acts on it alone,
+// its page, its logs, its folder, how it starts and stops. The dev app never runs the checkout's vx, never opens port 3400
+// and never reads or writes <root>/logs: those are his live Light's.
+struct InstanceParts: Equatable {
+    let vx: String, page: String, logs: String, folder: String
+    let start: [String]?, stop: [String]?
+}
+
+func instanceParts(file path: String?) -> InstanceParts? {
+    guard let path, let data = FileManager.default.contents(atPath: path),
+          let found = try? JSONSerialization.jsonObject(with: data) as? [String: Any], found["kind"] as? String == "dev",
+          let vx = found["vx"] as? String, let page = found["page"] as? String,
+          let logs = found["logs"] as? String, let folder = found["folder"] as? String,
+          !vx.isEmpty, !page.isEmpty, !logs.isEmpty, !folder.isEmpty else { return nil }
+    let words = { (key: String) in (found[key] as? [String]).flatMap { $0.isEmpty ? nil : $0 } }
+    return InstanceParts(vx: vx, page: page, logs: logs, folder: folder, start: words("start"), stop: words("stop"))
+}
+
+let parts = instance == "dev" ? instanceParts(file: Bundle.main.object(forInfoDictionaryKey: "ViventiumInstanceFile") as? String) : nil
+let openNoteObject: String? = parts?.folder ?? root  // (this installation's own: another Viventium's app is never asked)
+let page = parts?.page ?? (instance == "dev" ? "http://127.0.0.1:3700"  // (the dev copy never opens his page, even unset)
+    : "http://localhost:\(ProcessInfo.processInfo.environment["UI_PORT"] ?? "3400")")
 let keeping = CommandLine.arguments.contains("--keep")
 let privacy = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")!
 // Whether macOS let the keeper in, for the settings page to say (outside the project: it must be writable when blocked).
-let keptFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/Viventium Light/keep.json")
-let logs = "\(root)/logs"
+let keptFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+    instance == "dev" ? "Library/Application Support/Viventium Light Dev/keep.json" : "Library/Application Support/Viventium Light/keep.json")
+let logs = parts?.logs ?? "\(root)/logs"
+let stateRoot = parts?.folder ?? root  // (where its own state is: the dev folder's, or this checkout's)
 func here(_ name: String) -> Bool { FileManager.default.fileExists(atPath: "\(logs)/\(name)") }
 // (--act: a click done without a screen; what it would open is printed, and its change is made at once)
 let dry = CommandLine.arguments.contains("--act")
@@ -88,11 +113,22 @@ func installPackagedRuntime() throws {
 
 /// One run of `./vx ARGS` (its answer, and whether it could run at all: 126, or "Operation not permitted", is macOS
 /// keeping the folder closed), with `input` on its standard input.
+/// The program and arguments for `vx ARGS`: this checkout's vx; for the dev copy, its own vx (its stop for `down`, its
+/// start for `up`). nil: the dev copy without its parts, which runs nothing at all.
+func vxCommand(_ args: [String], dev: Bool = instance == "dev", parts: InstanceParts? = parts) -> (program: String, args: [String], folder: String)? {
+    guard dev else { return ("/bin/bash", ["\(root)/vx"] + args, root) }
+    guard let parts else { return nil }
+    if args == ["down"], let stop = parts.stop { return (stop[0], Array(stop.dropFirst()), parts.folder) }
+    if args.first == "up", let start = parts.start { return (start[0], Array(start.dropFirst()), parts.folder) }
+    return (parts.vx, args, parts.folder)
+}
+
 func vx(_ args: [String], input: String? = nil) -> (said: String, code: Int32, allowed: Bool) {
+    guard let command = vxCommand(args) else { return ("", 127, true) }
     let run = Process()
-    run.executableURL = URL(fileURLWithPath: "/bin/bash")
-    run.arguments = ["\(root)/vx"] + args
-    run.currentDirectoryURL = URL(fileURLWithPath: root)
+    run.executableURL = URL(fileURLWithPath: command.program)
+    run.arguments = command.args
+    run.currentDirectoryURL = URL(fileURLWithPath: command.folder)
     run.environment = environment()
     let out = Pipe(), into = Pipe()
     run.standardOutput = out
@@ -127,9 +163,13 @@ func keep() -> Bool {
 func startHer(place: String? = nil, setupInput: Pipe? = nil,
               line: @escaping (String) -> Void, done: @escaping (Int32) -> Void) -> Process {
     let run = Process()
-    run.executableURL = URL(fileURLWithPath: "/bin/bash")
-    run.arguments = ["\(root)/vx", "up"] + (place.map { [$0] } ?? [])
-    run.currentDirectoryURL = URL(fileURLWithPath: root)
+    guard let command = vxCommand(["up"] + (place.map { [$0] } ?? [])) else {
+        DispatchQueue.main.async { done(127) }
+        return run
+    }
+    run.executableURL = URL(fileURLWithPath: command.program)
+    run.arguments = command.args
+    run.currentDirectoryURL = URL(fileURLWithPath: command.folder)
     var env = environment()
     if setupInput != nil { env["VX_SETUP_WINDOW"] = "1" }
     run.environment = env
@@ -272,24 +312,64 @@ func drawMark(in box: NSRect, wide: CGFloat, color: NSColor) {
     }
 }
 
-// The mark in the menu bar, as a template image: macOS tints it.
-func mark(dim: Bool) -> NSImage {
-    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { box in
-        drawMark(in: box, wide: 15, color: NSColor.black.withAlphaComponent(dim ? 0.45 : 1))
+// The mark in the menu bar, as a template image: macOS tints it. The dev copy (instance "dev") carries a small code
+// sign, </>, at its bottom right, cut out of the mark so it reads at menu-bar size in either tint.
+func mark(dim: Bool, dev: Bool = instance == "dev") -> NSImage {
+    let image = NSImage(size: NSSize(width: dev ? 22 : 18, height: 18), flipped: true) { box in
+        let tone = NSColor.black.withAlphaComponent(dim ? 0.45 : 1)
+        drawMark(in: NSRect(x: 0, y: 0, width: 18, height: 18), wide: 15, color: tone)
+        if dev { devBadge(in: NSRect(x: box.width - 12, y: box.height - 9, width: 12, height: 9), color: tone) }
         return true
     }
     image.isTemplate = true
+    image.accessibilityDescription = dev ? "Viventium AI (development)" : "Viventium AI"
     return image
+}
+
+/// The DEV sign: a small solid tile with </> cut out of it, and a clear ring around the tile where it meets the mark.
+func devBadge(in tile: NSRect, color: NSColor) {
+    guard let context = NSGraphicsContext.current else { return }
+    context.saveGraphicsState()
+    context.compositingOperation = .clear
+    NSBezierPath(roundedRect: tile.insetBy(dx: -1.2, dy: -1.2), xRadius: 3.4, yRadius: 3.4).fill()
+    context.compositingOperation = .sourceOver
+    color.setFill()
+    NSBezierPath(roundedRect: tile, xRadius: 2.4, yRadius: 2.4).fill()
+    // </>: two chevrons and a slash, cut out (flipped: y grows downwards)
+    let sign = NSBezierPath()
+    let mid = tile.midY, h = tile.height * 0.30, x = tile.minX
+    sign.move(to: NSPoint(x: x + 3.6, y: mid - h)); sign.line(to: NSPoint(x: x + 1.9, y: mid)); sign.line(to: NSPoint(x: x + 3.6, y: mid + h))
+    sign.move(to: NSPoint(x: x + 8.4, y: mid - h)); sign.line(to: NSPoint(x: x + 10.1, y: mid)); sign.line(to: NSPoint(x: x + 8.4, y: mid + h))
+    sign.move(to: NSPoint(x: x + 6.9, y: mid - h - 0.4)); sign.line(to: NSPoint(x: x + 5.1, y: mid + h + 0.4))
+    sign.lineWidth = 1.1
+    sign.lineCapStyle = .round
+    sign.lineJoinStyle = .round
+    context.compositingOperation = .clear
+    sign.stroke()
+    context.restoreGraphicsState()
 }
 
 // The app's icon: her mark, crisp and light, on a graphite tile (the design language: graphite, no outlines, no warm
 // fill), with the rounded corners every Mac app icon has.
-func icon(side: CGFloat) -> NSImage {
+// The dev copy's icon (--icon FILE SIDE --dev, or its Info.plist's ViventiumInstance "dev") carries the same </> sign as its
+// menu-bar mark, at the tile's bottom right, so the Dock and Finder tell the two apps apart.
+func icon(side: CGFloat, dev: Bool = instance == "dev") -> NSImage {
     NSImage(size: NSSize(width: side, height: side), flipped: true) { box in
         let inset = side * 0.1, tile = box.insetBy(dx: inset, dy: inset)
         NSColor(calibratedRed: 0.13, green: 0.135, blue: 0.145, alpha: 1).setFill()
         NSBezierPath(roundedRect: tile, xRadius: tile.width * 0.225, yRadius: tile.width * 0.225).fill()
         drawMark(in: tile, wide: tile.width * 0.62, color: NSColor(calibratedWhite: 0.97, alpha: 1))
+        if dev {
+            // (drawn at the menu-bar sign's own size, 12 by 9, then scaled to the tile)
+            let scale = tile.width * 0.34 / 12
+            let sign = NSImage(size: NSSize(width: 12 * scale + 2.4 * scale, height: 9 * scale + 2.4 * scale), flipped: true) { _ in
+                NSGraphicsContext.current?.cgContext.scaleBy(x: scale, y: scale)
+                devBadge(in: NSRect(x: 1.2, y: 1.2, width: 12, height: 9), color: NSColor(calibratedWhite: 0.97, alpha: 1))
+                return true
+            }
+            sign.draw(in: NSRect(x: tile.maxX - sign.size.width - tile.width * 0.06, y: tile.maxY - sign.size.height - tile.width * 0.06,
+                                 width: sign.size.width, height: sign.size.height))
+        }
         return true
     }
 }
@@ -541,6 +621,122 @@ func row(_ views: [NSView], spacing: CGFloat = 12) -> NSStackView {
     return made
 }
 
+// -- One app per installation --
+// One mark per Viventium folder, whatever the app is called or which build it is. Read from macOS each time, never
+// remembered: the copies of this app that run (by its bundle identifier), each one's folder (the one it was started
+// with, else its own Info.plist's, found from the program it runs, so a renamed app is still known), whether it is the
+// keeper, and when it started. (A copy opened by hand under an older name could keep running beside the keeper after
+// a rename and a new build, so two marks showed.)
+
+/// Another copy of this app, as macOS sees it now.
+struct Copy: Equatable {
+    let pid: pid_t
+    let root: String?  // its Viventium folder (nil: not known, and then never touched)
+    let keeper: Bool  // started with --keep (by launchd)
+    let started: Date
+}
+
+/// A process's arguments, as it was started (KERN_PROCARGS2; this user's own processes only).
+func processArguments(_ pid: pid_t) -> [String]? {
+    var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+    var size = 0
+    guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+    var bytes = [UInt8](repeating: 0, count: size)
+    guard sysctl(&mib, 3, &bytes, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return nil }
+    let count = bytes.withUnsafeBytes { Int($0.load(as: Int32.self)) }
+    var at = MemoryLayout<Int32>.size
+    while at < size, bytes[at] != 0 { at += 1 }  // (the program's path)
+    while at < size, bytes[at] == 0 { at += 1 }
+    var args: [String] = []
+    while args.count < count, at < size {
+        let start = at
+        while at < size, bytes[at] != 0 { at += 1 }
+        args.append(String(decoding: bytes[start..<at], as: UTF8.self))
+        at += 1
+    }
+    return args.count == count ? args : nil
+}
+
+/// The program a process runs, where it is now (a renamed app's new place).
+func processProgram(_ pid: pid_t) -> String? {
+    var path = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+    return proc_pidpath(pid, &path, UInt32(path.count)) > 0 ? String(cString: path) : nil
+}
+
+func processStarted(_ pid: pid_t) -> Date? {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+    let at = info.kp_proc.p_un.__p_starttime
+    return Date(timeIntervalSince1970: TimeInterval(at.tv_sec) + TimeInterval(at.tv_usec) / 1_000_000)
+}
+
+func standardRoot(_ path: String) -> String { URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path }
+
+/// What a process is, as a copy of this app: its folder from what it was started with (the folder given, else its
+/// app's Info.plist: ViventiumPackaged, else ViventiumRoot), whether it keeps, and when it started.
+func copy(_ pid: pid_t, bundle: URL? = nil) -> Copy? {
+    guard let args = processArguments(pid), let started = processStarted(pid) else { return nil }
+    var found: String?
+    if args.count > 1, !args[1].hasPrefix("-") {
+        found = args[1]
+    } else {
+        var places: [URL] = []
+        if let program = processProgram(pid) {  // (…/Name.app/Contents/MacOS/Program)
+            places.append(URL(fileURLWithPath: program).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent())
+        }
+        if let bundle { places.append(bundle) }
+        for place in places {
+            guard let info = NSDictionary(contentsOf: place.appendingPathComponent("Contents/Info.plist")) else { continue }
+            if info["ViventiumPackaged"] as? Bool == true { found = installed.path; break }
+            if let built = info["ViventiumRoot"] as? String { found = built; break }
+        }
+    }
+    return Copy(pid: pid, root: found.map(standardRoot), keeper: args.contains("--keep"), started: started)
+}
+
+/// The other copies of this app that run for this installation (never this process).
+func otherCopies() -> [Copy] {
+    let mine = ProcessInfo.processInfo.processIdentifier
+    let here = standardRoot(root)
+    return NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "ai.viventium.light")
+        .filter { $0.processIdentifier != mine && !$0.isTerminated }
+        .compactMap { copy($0.processIdentifier, bundle: $0.bundleURL) }
+        .filter { $0.root == here }
+}
+
+/// When this app's program was built (its file's last change): a copy that started before it runs an older build.
+func builtAt() -> Date {
+    let file = Bundle.main.executablePath ?? CommandLine.arguments[0]
+    return (try? FileManager.default.attributesOfItem(atPath: file)[.modificationDate] as? Date) ?? .distantPast
+}
+
+/// What a copy starting now does about the others of its installation:
+/// - one that started before this build (an update, a rename) is an old build: it is ended;
+/// - a person opening it while a copy runs: that copy is asked to open her, and this one goes;
+/// - the keeper starts beside a copy that is not one: it stays, and that copy gives the mark to it at its next look
+///   (handsOver), once no start or setup window of its own is open;
+/// - otherwise (a second keeper, or vx starting one while one runs): this one goes.
+func oneApp(keeper: Bool, built: Date, others: [Copy]) -> (end: [pid_t], stay: Bool) {
+    let old = others.filter { $0.started < built.addingTimeInterval(-0.5) }
+    let current = others.filter { !old.contains($0) }
+    let stay = current.isEmpty || (keeper && !current.contains { $0.keeper })
+    return (old.map(\.pid), stay)
+}
+
+/// A copy that is not the keeper gives the mark to its installation's keeper, once nothing of its own is open.
+func handsOver(keeping: Bool, busy: Bool, others: [Copy]) -> Bool {
+    !keeping && !busy && others.contains { $0.keeper }
+}
+
+/// An old build ended: a plain signal, never its Quit (Quit stops her: ./vx down). Waited for, then made sure.
+func endCopy(_ pid: pid_t) {
+    kill(pid, SIGTERM)
+    for _ in 0..<30 where kill(pid, 0) == 0 { usleep(100_000) }
+    if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+}
+
 // -- The panel under her mark --
 
 /// What she is doing, as the panel needs it.
@@ -553,8 +749,9 @@ struct Control {
     let name: String, glyph: String, on: Bool, dim: Bool, say: String, act: String
     var explanation: String {
         if act.hasPrefix("place:") {
-            let descriptions = ["place:local": "Use AI only on this Mac", "place:hybrid": "Use this Mac and online AI",
-                                "place:cloud": "Use online AI", "place:small-8": "Use online AI with typing",
+            let descriptions = ["place:local": "Run everything locally: maximum privacy, works fully offline",
+                                "place:hybrid": "Hybrid: a good balance of privacy, speed and intelligence",
+                                "place:cloud": "Use online cloud AI", "place:small-8": "Use online AI with typing",
                                 "place:small-16": "Use online AI with local memory", "place:small-24": "Use online AI with local voice"]
             let what = descriptions[act] ?? "Switch to \(name)"
             return dim && !say.isEmpty ? "\(what) · \(say)" : what
@@ -563,13 +760,13 @@ struct Control {
         case "ears": return on ? "Turn off the microphone" : "Talk by voice"
         case "eyes": return dim ? "The living face is being added" : on ? "Hide the living face" : "Show the living face"
         case "wing": return on ? "Reply to everything I say" : "Reply only when addressed"
-        case "listen": return on ? "Speak replies again" : "Listen without speaking"
+        case "listen": return "Listen but don't talk"  // (what it is; whether it is on, the control shows)
         case "page": return name == "Start" ? "Start Viventium AI" : "Open the conversation"
         case "telegram": return "Open your Telegram conversation"
         case "life": return "Open your Life folder"
         case "settings": return "Open Settings"
         case "doctor": return "Check what needs repair"
-        case "quit": return "Quit Viventium AI"
+        case "quit": return "Turn off"
         default: return name
         }
     }
@@ -580,7 +777,7 @@ func controls(_ now: Now, _ look: Look, bot: Bool) -> (her: [Control], places: [
         return ([], [], [
             Control(name: "Settings", glyph: "gearshape", on: false, dim: false, say: "", act: "settings"),
             Control(name: "Doctor", glyph: "stethoscope", on: false, dim: false, say: "", act: "doctor"),
-            Control(name: "Quit", glyph: "power", on: false, dim: false, say: "", act: "quit"),
+            Control(name: "Turn off", glyph: "power", on: false, dim: false, say: "", act: "quit"),
         ])
     }
     let her: [Control] = [
@@ -601,7 +798,7 @@ func controls(_ now: Now, _ look: Look, bot: Bool) -> (her: [Control], places: [
         bot && now == .ready ? Control(name: "Telegram", glyph: "paperplane", on: false, dim: false, say: "", act: "telegram") : nil,
         Control(name: "Life folder", glyph: "folder", on: false, dim: false, say: "", act: "life"),
         Control(name: "Settings", glyph: "gearshape", on: false, dim: false, say: "", act: "settings"),
-        Control(name: "Quit", glyph: "power", on: false, dim: false, say: "", act: "quit"),
+        Control(name: "Turn off", glyph: "power", on: false, dim: false, say: "", act: "quit"),
     ].compactMap { $0 }
     return (her, places, small)
 }
@@ -687,7 +884,7 @@ final class Panel: NSView {
                 made.hoverChanged = { [weak self] in self?.explain($0, $1) }
                 made.on = c.on
                 made.dim = c.dim
-                made.highlighted = c.act == highlight
+                made.highlighted = highlight?.split(separator: ",").contains { $0 == c.act } ?? false
                 return made
             }
             if !her.isEmpty { stack.addArrangedSubview(row(her.map { disc($0, false) })) }
@@ -1191,7 +1388,7 @@ final class Bar: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDel
         aboutItem.target = self
         appMenu.addItem(aboutItem)
         appMenu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit Viventium AI", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Turn off", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quitItem.target = NSApp
         appMenu.addItem(quitItem)
         NSApp.mainMenu = menu
@@ -1216,7 +1413,10 @@ final class Bar: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDel
             if self.firstWindow { self.readAccounts() }
         }
         Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in self.followTour() }
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in self.refresh() }
+        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { _ in
+            self.handOver()
+            self.refresh()
+        }
         guard keeping else { return }
         let round = {
             DispatchQueue.global().async {
@@ -1233,8 +1433,8 @@ final class Bar: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDel
     func place() {
         let wanted = blocked || !here("menubar.off")
         if wanted, item == nil {
-            item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-            item?.button?.toolTip = "Viventium AI"
+            item = NSStatusBar.system.statusItem(withLength: instance == "dev" ? NSStatusItem.variableLength : NSStatusItem.squareLength)
+            item?.button?.toolTip = instance == "dev" ? "Viventium AI (development)" : "Viventium AI"
             item?.button?.target = self
             item?.button?.action = #selector(clicked)
             item?.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -1288,15 +1488,15 @@ final class Bar: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDel
 
     func followTour() {
         let now = Date().timeIntervalSince1970
-        let data = FileManager.default.contents(atPath: "\(root)/state/core/asks/control.json")
+        let data = FileManager.default.contents(atPath: "\(stateRoot)/state/core/asks/control.json")
         if up, item != nil,
            let data,
            let cue = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let id = cue["id"] as? String, id != tourRequest,
            let at = cue["at"] as? Double, (0..<3).contains(now - at),
-           let name = cue["control"] as? String {
+           let name = (cue["controls"] as? [String])?.joined(separator: ",") ?? cue["control"] as? String {
             tourRequest = id
-            highlight = name
+            highlight = name  // (one control, or several lit at once: "wing,settings")
             highlightUntil = now + 30
             if popover.isShown {
                 draw()
@@ -1904,6 +2104,14 @@ final class Bar: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDel
         setupInput = nil
     }
 
+    /// The keeper runs for this folder now: one mark, its. This copy goes, without stopping her (never Quit's work),
+    /// once no start or setup window of its own is open.
+    func handOver() {
+        guard handsOver(keeping: keeping, busy: starter != nil || window?.isVisible == true, others: otherCopies()) else { return }
+        note("handed the mark to the keeper")
+        exit(0)
+    }
+
     func quit() {  // she rests, and so does this mark, until the app is opened again, ./vx up or login
         note("Quit Viventium: she rests until the app is opened again")
         popover.performClose(nil)
@@ -2145,7 +2353,7 @@ if let at = flag("--icon"), CommandLine.arguments.count > at + 2, let side = Int
     let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: side, pixelsHigh: side, bitsPerSample: 8, samplesPerPixel: 4,
                                   hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
-    icon(side: CGFloat(side)).draw(in: NSRect(x: 0, y: 0, width: side, height: side))
+    icon(side: CGFloat(side), dev: instance == "dev" || flag("--dev") != nil).draw(in: NSRect(x: 0, y: 0, width: side, height: side))
     try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: CommandLine.arguments[at + 1]))
     exit(0)
 }
@@ -2159,6 +2367,18 @@ if flag("--open-dry") != nil {
 }
 
 let app = NSApplication.shared
+// The dev copy without its parts runs nothing: it says so when opened, and goes (never his live Light instead).
+if instance == "dev" && parts == nil {
+    if opened {
+        app.setActivationPolicy(.regular)
+        app.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "The development copy is not set up"
+        alert.informativeText = "Make it first (tools/bench/dev up), then open this app again."
+        alert.runModal()
+    }
+    exit(78)
+}
 let bar = Bar()
 if opened {
     if packaged {
@@ -2174,18 +2394,21 @@ if opened {
             exit(1)
         }
     }
-    // One app, one mark: when hers runs already, it is asked to open her, and this one goes.
-    let mine = ProcessInfo.processInfo.processIdentifier
-    let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "ai.viventium.light")
-        .filter { $0.processIdentifier != mine && (!packaged || $0.bundleURL == Bundle.main.bundleURL) }
-    if !others.isEmpty {
-        DistributedNotificationCenter.default().postNotificationName(openNote, object: openNoteObject, userInfo: nil, deliverImmediately: true)
-        exit(0)
-    }
-    app.delegate = bar
-    app.setActivationPolicy(.regular)  // (opened by a person: its window and its Dock icon while it opens her)
-} else {
-    app.delegate = bar
-    app.setActivationPolicy(.accessory)  // no Dock icon, no window
 }
+// One app, one mark, for this installation (oneApp): old builds end; otherwise the one running stays, and a person's
+// open asks it to open her.
+let (ending, staying) = oneApp(keeper: keeping, built: builtAt(), others: otherCopies())
+for pid in ending {
+    note("ended an older build of this app (\(pid))")
+    endCopy(pid)
+}
+if !staying {
+    if opened {
+        DistributedNotificationCenter.default().postNotificationName(openNote, object: openNoteObject, userInfo: nil, deliverImmediately: true)
+    }
+    exit(0)
+}
+app.delegate = bar
+// (opened by a person: its window and its Dock icon while it opens her; else no Dock icon, no window)
+app.setActivationPolicy(opened ? .regular : .accessory)
 app.run()

@@ -47,6 +47,7 @@ CALLBACK = "/auth/callback"
 TERMINAL_REFRESH = frozenset(("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
                                "refresh_token_invalidated", "refresh_token_reused"))
 WAIT = 8.0
+PAUSE_FIRST, PAUSE_MOST = 60, 1800  # (seconds the plan rests after its limit, with no retry time of its own: Connection.pause)
 STOP_WORDS = {
     "limited": "The ChatGPT plan limit was reached.",
     "refused": "ChatGPT refused the plan request.",
@@ -454,12 +455,26 @@ class Connection:
     def _owner(kept):
         return hashlib.sha256(kept["subject"].encode()).hexdigest()
 
-    def pause(self, grant: Authorization, seconds=60):
+    def pause(self, grant: Authorization, seconds=None):
+        """The plan's limit, met: asked again only after `seconds`, the provider's own retry time. Without one, PAUSE_FIRST,
+        doubled each time the limit is met again before the plan has answered (PAUSE_MOST at most): a usage limit can last
+        hours, and each ask that meets it again holds a reply for a second or two before its backup answers."""
         with self._locked() as data:
             _, kept = self._selected(data, using=grant)
             limits = data.setdefault("limits", {})
             owner = self._owner(kept)
+            if seconds is None:
+                again = data.setdefault("limit_again", {})
+                seconds = again[owner] = min(PAUSE_MOST, again[owner] * 2) if owner in again else PAUSE_FIRST
             limits[owner] = max(limits.get(owner, 0), time.time() + max(1, seconds))
+
+    def answered(self, grant: Authorization):
+        """The plan answered: a limit met next starts from PAUSE_FIRST again."""
+        with self._locked() as data:
+            again = data.get("limit_again")
+            if again:
+                _, kept = self._selected(data, using=grant)
+                again.pop(self._owner(kept), None)
 
     def disconnect(self):
         """Stop this registration. Return whether OpenAI confirmed remote revocation."""

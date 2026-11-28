@@ -2,6 +2,56 @@
 
 What changed for people who use Viventium AI, one entry per public release, newest first.
 
+## 0.5.0 experimental · release 57 · 27 November 2026
+
+- Calls can have their own mind. With a call's mind configured (for example GPT-6.1 Sol on your own OpenAI key), the
+  words Viventium speaks on a call are asked of that mind, and your chosen mind is its cloud fallback: if the call's
+  mind has given no word after a few seconds, your chosen mind is asked beside it and the first of the two to speak
+  answers. The backup on your Mac answers only when both stay silent for their whole wait. Your typed replies, on the
+  page and on Telegram, keep your chosen mind. Checked with stand-in minds: a spoken turn answered by the call's mind,
+  typed and Telegram turns by your chosen mind, a silent call mind covered by your chosen mind before the backup's
+  time, both silent answered by the backup, and every reply ending as answered in its own record.
+- When both cloud minds stay silent on a call, or a read reply's first ask hangs and is asked again, the backup model
+  on your Mac starts loading right away, in a request of its own, so it is ready if it is needed and a reply answered
+  from the cloud meanwhile no longer cuts its load short. It is never loaded for one slow mind, and it stays loaded
+  only for the backup server's own keep-alive.
+- A result's reply is now written knowing what was said on your other channels since: your latest words there, and a
+  reply there that already gave the result, reach it, so it decides itself whether to tell it briefly or hold it.
+- Adding an account while another account of the same service is still signing in is refused with a plain note to
+  finish it in the browser. A sign-in left unfinished ends by itself after ten minutes, so it never blocks the next
+  one.
+- Recall's two searches, by words and by meaning, now run at the same time, each inside recall's wait. Before, a word
+  search slowed by a busy Mac could use all of recall's time and the search by meaning never ran. Now what each found
+  is given, and a search that did not finish in time says so instead of reading as if nothing was found.
+- Writing where you are and starting a quick helper no longer pause Viventium's voice and replies while the disk or
+  the Mac is slow.
+- When your ChatGPT plan reaches its limit in the middle of a reply, Viventium now reads it as that limit: the plan
+  rests and is asked again only after its rest, each rest longer than the last, while the backup answers. Before, the
+  reply ended with "Connection error." and every new turn asked the plan again. The note that the backup is answering
+  is said again when you choose another mind, and it no longer comes back at the start of the backup's later replies.
+  Checked on a development copy's page, typed turn by turn, and with stand-in minds.
+- When the backup on your Mac tells you a finished result, it is asked as a backup: it never speaks a tool's name or
+  its arguments. Before, after a telling that could not be confirmed, it could read a tool call out loud on a call.
+- When Viventium's own words said it would look into your ask, and the check that decides on background work came in
+  after those words, the work now starts. Checked with made-up turns on the configured helper, old wording against
+  new: the work followed 17 times in 18 (9 before); a refusal or a question back never started work (as before); and
+  where Viventium's reply had already answered in full, work that was not needed started 4 times in 15 (13 before), a
+  known limit.
+
+- While Wing or Listen only is on, each new thing you say brings one small toast under the mode switch for a few
+  seconds: "Listen only: I'm listening, not talking." or "Wing mode: I'll answer when you talk to me." So when no
+  answer comes, you know why. It replaces the line that showed after a turn kept quiet.
+- A Stop button in the chat: while Viventium is thinking or answering, the send button becomes Stop (with nothing
+  typed). It ends that answer at once; work already handed off goes on.
+- The line "Viventium is an AI." under the message box is gone.
+- Settings: Brain has "View live" (its live brain) beside "Speed and smarts".
+- The menu-bar panel says what each control is: Listen only is "Listen but don't talk"; Local is "Run everything
+  locally: maximum privacy, works fully offline"; Hybrid is "Hybrid: a good balance of privacy, speed and
+  intelligence"; Cloud is "Use online cloud AI". The power button and the app menu say "Turn off".
+- The app runs once per Viventium folder. A copy started before the app was updated or renamed is ended when the new
+  one starts (it no longer stays as a second mark in the menu bar), and a copy you opened gives its mark to the one
+  that starts with your Mac. The development copy shows a small </> sign on its menu-bar mark.
+
 ## 0.5.0 experimental · release 56 · 27 November 2026
 
 - Continuous awareness now comes alive the way a close friend would, not only when something is owed. With nothing
@@ -30,7 +80,7 @@ What changed for people who use Viventium AI, one entry per public release, newe
 - When Deep memory or recall finds a summary of an earlier conversation, Viventium is now also shown what came of it:
   what was decided, what was promised and what was found or suggested there, as it stands after your corrections and
   forgets. Before, it was shown only the part that matched your words, often what you had asked for back then, so it
-  could say an earlier list "does not name the places" when the places were in it. Checked without a model, on a real
+  could wrongly say an earlier list was incomplete. Checked without a model, on a real
   request and its memory: the earlier list now reaches recall every time it is asked for (once in six before), and
   Deep memory names it on Grok on your subscription five times out of five (never before). Everyday turns are shown
   exactly what they were.

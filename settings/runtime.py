@@ -14,6 +14,7 @@ vx is the one at the settings root: this checkout's, a test's stand-in, or the t
 """
 import base64
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -91,6 +92,59 @@ def key_item(name: str, env: dict) -> str:
 
 
 XP_API = "http://127.0.0.1:8866"  # the xPerfect her online Workers run on (brain/state-cloud; vx xp_ports)
+
+
+# An added account's sign-in that Light started ends by itself if it is not finished in this time: it never runs on
+# without end, holding its own sign-in open for a browser nobody is at. Then the page offers to sign in again.
+SIGN_IN_WAIT = float(os.environ.get("VX_SIGN_IN_WAIT") or 600)
+
+
+@contextlib.contextmanager
+def locked(name: str):
+    """One at a time across every process of hers that changes this (each page click is a process of its own)."""
+    with private_open(LOGS / f"{name}.lock", "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _sign_in_stamp(account_id: str) -> Path:
+    return LOGS / "sign-ins" / f"{account_id}.json"
+
+
+def bound_sign_in(account_id: str) -> None:
+    """The sign-in of an added account, just started here, ends by itself: a small helper of its own (python -m
+    settings end-sign-in) waits SIGN_IN_WAIT, then asks xPerfect whether that sign-in still runs and, if it does, ends
+    it through xPerfect's own route. A newer start of the same account's sign-in replaces this one's stamp, so this
+    helper never ends that newer one."""
+    started = f"{time.time():.3f}"
+    private_write(_sign_in_stamp(account_id), json.dumps({"started": started}))
+    names = ("VX_STATE", "VX_LOGS", "VX_SETTINGS_ROOT", "VX_SETTINGS_OFFLINE", "VX_SETTINGS_BENCH", "XPERFECT_STATE",
+             "XPERFECT_API", "PYTHONPATH")
+    env = {**clean_env(), **{k: os.environ[k] for k in names if os.environ.get(k)}}
+    subprocess.Popen([sys.executable, "-m", "settings", "end-sign-in", account_id, started, f"{SIGN_IN_WAIT:g}"], cwd=CODE,
+                     env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def end_sign_in(account_id: str, started: str, wait: float) -> None:
+    """The helper bound_sign_in starts: after `wait`, the sign-in it was started for, if it still runs, is ended."""
+    time.sleep(max(0.0, wait))
+    try:
+        if json.loads(_sign_in_stamp(account_id).read_text()).get("started") != started:
+            return  # (a newer start of it since: that one has its own helper)
+    except (OSError, ValueError):
+        return
+    try:
+        if xperfect("GET", f"/v1/provider-accounts/{account_id}/setup").get("status") == "connecting":
+            xperfect("POST", f"/v1/provider-accounts/{account_id}/setup/cancel")
+            logged("ending an unfinished sign-in", f"{account_id}: not finished in {wait:g} s; ended, to be signed in again")
+    except RuntimeError as e:
+        logged("ending an unfinished sign-in", f"{account_id}: {type(e).__name__}: {e}")
+    with contextlib.suppress(OSError):
+        _sign_in_stamp(account_id).unlink()
 
 
 def xperfect(method: str, path: str, body: dict | None = None, timeout: float = 15) -> dict:
@@ -738,13 +792,13 @@ def busy() -> str:
 
 
 RESTART_FAILED = "Your change is saved, but Viventium could not switch over to it."
-RESTART_AGAIN = " Quit Viventium and open it again to start with it."  # (the app starts her on what is saved: ./vx up)
+RESTART_AGAIN = " Turn Viventium off and open it again to start with it."  # (the app starts her on what is saved: ./vx up)
 # She did switch over, and her mind then gave no word (vx mind_answers: exit 3 or 4). What is said is always the latest
 # result's: her verdict (logs/mind-answer, which only a start's own check writes) says which, and a start after this
 # switch-over (its verdict newer than this record) decides it alone: heard, and nothing is said; not heard, said as it is
 # now (no answer in time may pass by asking again; anything else needs another mind, chosen right here under Brain).
 RESTART_MIND = "Your change is saved, but Viventium's mind did not answer. Choose another one under Brain."
-RESTART_SILENT = "Your change is saved, but Viventium's mind did not answer in time. Quit Viventium and open it again to ask it again."
+RESTART_SILENT = "Your change is saved, but Viventium's mind did not answer in time. Turn Viventium off and open it again to ask it again."
 
 
 def applying() -> dict:

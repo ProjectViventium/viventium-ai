@@ -1,7 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { Room } from 'livekit-client';
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'motion/react';
 import { useSessionContext } from '@livekit/components-react';
 import { cn } from '@/lib/shadcn/utils';
@@ -34,17 +33,27 @@ export function useCallMode() {
   return { mode, setMode, modes };
 }
 
-// A turn heard and, by the call's mode, kept quiet (her agent's "viv.quiet": the mode and the turn, never the words):
-// one line under the switch says so, with one tap to Talk, so a quiet mode never leaves silence unexplained. The pill
-// follows the mode told; the line goes when she speaks, the mode changes or the microphone goes off.
-export function useQuiet(
+// While Wing or Listen only is on, each new thing he says (a new piece of his speech-to-text, or a turn her agent heard
+// and kept quiet: "viv.quiet", the mode and the turn, never the words) brings one short toast under the switch, so
+// someone waiting for an answer knows why none comes, shown only when new speech-to-text arrives. The switch follows
+// the mode told; the toast goes by itself, when she speaks, the mode changes to Talk
+// or the microphone goes off. One toast, never two: a new turn only starts its time again.
+const SHOWN_MS = 4500;
+export const MODE_TOAST: Record<string, string> = {
+  listen: "Listen only: I'm listening, not talking.",
+  wing: "Wing mode: I'll answer when you talk to me.",
+};
+
+export function useModeToast(
   mode: string,
   setMode: (id: string) => void,
   talking: boolean,
-  speaking: boolean
+  speaking: boolean,
+  heard: string | undefined
 ) {
   const { room } = useSessionContext();
-  const [quiet, setQuiet] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ mode: string; at: number } | null>(null);
+  const show = (quiet: string) => setToast({ mode: quiet, at: Date.now() });
   useEffect(() => {
     if (!room) return;
     room.registerTextStreamHandler('viv.quiet', async (reader) => {
@@ -52,7 +61,7 @@ export function useQuiet(
         const told = JSON.parse(await reader.readAll()) as { mode?: string };
         if (told.mode === 'listen' || told.mode === 'wing') {
           setMode(told.mode);
-          setQuiet(told.mode);
+          show(told.mode);
         }
       } catch {
         // (a message that is not one of these is left alone)
@@ -60,55 +69,38 @@ export function useQuiet(
     });
     return () => room.unregisterTextStreamHandler('viv.quiet');
   }, [room, setMode]);
+  // (his newest piece of speech-to-text, by its own id: each new one, never an update of the same one, and never one
+  // that was already there when his microphone came on)
+  const seen = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (quiet && (quiet !== mode || !talking || speaking)) setQuiet(null);
-  }, [quiet, mode, talking, speaking]);
-  return quiet;
+    if (!heard || heard === seen.current) return;
+    seen.current = heard;
+    if (talking && MODE_TOAST[mode]) show(mode);
+  }, [heard, talking, mode]);
+  useEffect(() => {
+    if (!toast) return;
+    if (!MODE_TOAST[mode] || !talking || speaking) {
+      setToast(null);
+      return;
+    }
+    const gone = setTimeout(() => setToast(null), SHOWN_MS - (Date.now() - toast.at));
+    return () => clearTimeout(gone);
+  }, [toast, mode, talking, speaking]);
+  return toast && MODE_TOAST[mode] ? mode : null;
 }
 
-// Talk from the line: this call at once (as the switch does), and saved as how the next call starts, the way the menu
-// bar's and the settings page's choices are kept.
-export function talkNow(room: Room | undefined) {
-  room?.localParticipant.sendText('talk', { topic: 'viv.mode' }).catch(() => undefined);
-  fetch('/api/settings', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ call_mode: 'talk' }),
-  }).catch(() => undefined);
-}
-
-export function QuietLine({
-  quiet,
-  modes,
-  onTalk,
-}: {
-  quiet: string;
-  modes: Mode[];
-  onTalk: () => void;
-}) {
-  const name = modes.find((m) => m.id === quiet)?.name ?? quiet;
-  const said =
-    quiet === 'wing'
-      ? `Viventium took that as meant for someone else (${name}).`
-      : `Viventium heard you and is staying quiet (${name}).`;
+export function ModeToast({ mode }: { mode: string }) {
   return (
     <motion.div
       role="status"
-      data-quiet={quiet}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
+      data-mode-toast={mode}
+      initial={{ opacity: 0, y: -4 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
       transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-      className="bg-muted/70 fixed top-[60px] left-1/2 z-50 flex w-max max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-3 rounded-2xl py-1.5 pr-1.5 pl-4 text-xs leading-4 backdrop-blur-md"
+      className="fixed top-[64px] left-1/2 z-50 w-max max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-full bg-amber-400/15 px-4 py-1.5 text-xs leading-4 font-medium text-amber-800 backdrop-blur-md dark:bg-amber-300/12 dark:text-amber-200"
     >
-      <span className="text-muted-foreground">{said}</span>
-      <button
-        type="button"
-        onClick={onTalk}
-        className="bg-primary text-primary-foreground shrink-0 rounded-full px-3.5 py-1 font-medium"
-      >
-        Talk
-      </button>
+      {MODE_TOAST[mode]}
     </motion.div>
   );
 }

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import {
   BookOpen,
+  BrainCircuit,
   Brain as BrainIcon,
   ChevronRight,
   Clock,
@@ -280,15 +281,22 @@ export function Brain({ settings, save }: { settings: Settings; save: Save }) {
       id="brain"
       title="Brain"
       aside={
-        <button
-          type="button"
-          className="vs-bench"
-          aria-pressed={bench}
-          onClick={() => setBench(!bench)}
-        >
-          <Gauge />
-          Speed and smarts
-        </button>
+        // (her live brain, the Subconscious page's own button, here too: easy to find where the brain is set)
+        <span className="vsx-aside">
+          <Link href="/settings/subconscious/live" className="vsx-live">
+            <BrainCircuit />
+            View live
+          </Link>
+          <button
+            type="button"
+            className="vs-bench"
+            aria-pressed={bench}
+            onClick={() => setBench(!bench)}
+          >
+            <Gauge />
+            Speed and smarts
+          </button>
+        </span>
       }
     >
       {/* Wide screens: one table */}

@@ -660,7 +660,7 @@ def tool(item: str) -> None:
         linked.parent.mkdir(parents=True, exist_ok=True)
         linked.symlink_to(Path(home).expanduser())
     if not tool_ready(item):
-        raise Stop(f"{name(item)} was installed, but Viventium cannot find it yet. Quit Viventium and open it again.")
+        raise Stop(f"{name(item)} was installed, but Viventium cannot find it yet. Turn Viventium off and open it again.")
 
 
 def pretend(item: str) -> None:

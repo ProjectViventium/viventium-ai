@@ -10,7 +10,7 @@ Open Settings with the gear under the V in the macOS menu bar, or from the conve
 
 ## Controls
 
-Click the V to open the menu-bar panel. Ears controls the microphone and spoken conversation. With it off, you can keep typing. Talk is the regular spoken conversation, Wing listens and replies when you address Viventium, and Listen only listens without speaking. Use Wing when you want a sidekick on a call. Quit powers Viventium down until you open it again. The conversation has its own microphone and mode controls when voice is available.
+Click the V to open the menu-bar panel. Ears controls the microphone and spoken conversation. With it off, you can keep typing. Talk is the regular spoken conversation, Wing listens and replies when you address Viventium, and Listen only listens without speaking. Use Wing when you want a sidekick on a call. Turn off powers Viventium down until you open it again. The conversation has its own microphone and mode controls when voice is available.
 
 ## Stored on this Mac
 

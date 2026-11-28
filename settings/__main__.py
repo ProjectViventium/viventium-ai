@@ -23,6 +23,8 @@ elif action == "setup-mind":
     sys.exit(0 if service.setup_mind(os.environ) else 1)
 elif action == "own-sign-in":  # a sign-in Light makes itself, from start to end (the page starts it: runtime.sign_in)
     runtime.own_sign_in_done(sys.argv[2] if len(sys.argv) > 2 else "")
+elif action == "end-sign-in":  # an added account's sign-in, ended if still unfinished after its time (runtime)
+    runtime.end_sign_in(sys.argv[2], sys.argv[3], float(sys.argv[4]))
 elif action == "chatgpt-connect":
     runtime.finish_chatgpt(sys.argv[2])
 elif action == "install":  # one thing this Mac lacks, from start to end (settings/install.py)
