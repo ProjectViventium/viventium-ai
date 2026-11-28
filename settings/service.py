@@ -17,7 +17,7 @@ import time
 from dataclasses import asdict
 
 from core import resources, telegram_approvals
-from settings import catalog, files, install, runtime, store
+from settings import catalog, files, install, probe, runtime, store
 from settings.catalog import PARTS
 
 NATURES = [p["id"] for p in catalog.PERSONALITIES]
@@ -145,15 +145,23 @@ def private_keys(part: str, option: dict | None) -> tuple:
                  + (["QUEEN_URL"] if part == "mind" else ["STT_MODEL"] if part == "listen" else []))
 
 
+def same_account(part: str, one: str, other: str) -> bool:
+    """Whether two options of a part run on one provider account: the same option, or two online ones that need the same
+    key (GPT-6.1 Sol and GPT-6.2 Sol, both on your OpenAI key and endpoint). Their private lines are that account's."""
+    a, b = catalog.option(part, one), catalog.option(part, other)
+    return bool(a and b) and (one == other or (bool(private_keys(part, a)) and a.get("needs") == b.get("needs")))
+
+
 def private_lines(part: str, choice: dict, profile: str, plains: dict, running: dict, tracked: dict, saved: dict) -> tuple:
     """An online option's private lines (your own endpoint, the Keychain item your key lives in), each on its own, a
     line set empty as much as one with a value: (the ones in force by your own hand, the ones the page keeps for you).
-    A line is yours as written when this profile's own files set it and choose this option. Else, while this profile
-    runs this option and its block keeps any of its lines, those are its lines (an update that makes that option the
-    shipped default never drops them; one kept empty stays empty). Else it comes from the first that has it: what this
-    profile had for this option when it was last chosen here (kept in her settings when you chose another), your own
-    lines in another profile where the same option runs. Only the lines of that option:
-    choosing a voice never brings a mind's endpoint, and another mind never inherits one written for GPT-6.1 Sol.
+    A line is yours as written when this profile's own files set it and choose this option's account. Else, while this
+    profile runs an option of its account and its block keeps any of its lines, those are its lines (an update that
+    makes that option the shipped default never drops them; one kept empty stays empty). Else it comes from the first
+    that has it: what this profile had for this option, then for another of its account, when it was last chosen here
+    (kept in her settings when you chose another), your own lines in another profile where its account runs. Only the
+    lines of that account (same_account): choosing a voice never brings a mind's endpoint, and a mind of another
+    provider never inherits one written for GPT-6.1 Sol; GPT-6.2 Sol, on the same key, does.
     plains: each profile without the page's blocks; running: as vx loads it; tracked: its tracked file alone."""
     option_id = choice.get("id", "")
     keys = private_keys(part, catalog.option(part, option_id))
@@ -161,7 +169,7 @@ def private_lines(part: str, choice: dict, profile: str, plains: dict, running: 
         return {}, {}
 
     def chooses(values: dict) -> bool:
-        return choices(values)[part].get("id") == option_id
+        return same_account(part, choices(values)[part].get("id", ""), option_id)
 
     def his(values: dict, other: str) -> dict:  # (set in his own files: unlike what the tracked profile says)
         return {k: values[k] for k in keys if values.get(k, "") != tracked[other].get(k, "")}
@@ -169,7 +177,9 @@ def private_lines(part: str, choice: dict, profile: str, plains: dict, running: 
     hand = {k: plains[profile].get(k, "") for k in store.assigned(profile, list(keys))} if chooses(plains[profile]) else {}
     block = store.block(profile) if chooses(running[profile]) else {}
     kept = {k: block[k] for k in keys if k in block}  # (any of them kept here for this option: these are its lines)
-    places = [kept] if kept else [saved.get("private", {}).get(profile, {}).get(part, {}).get(option_id, {}),
+    left = saved.get("private", {}).get(profile, {}).get(part, {})  # (by option: this one's first, then its account's)
+    places = [kept] if kept else [left.get(option_id, {}), *[theirs for other_id, theirs in left.items()
+                                                             if other_id != option_id and same_account(part, other_id, option_id)],
                                   *[his(values, other) for other, values in running.items() if other != profile and chooses(values)]]
     found = {}
     for k in keys:
@@ -880,6 +890,18 @@ def no(why: str, **more) -> dict:
     return {"ok": False, "why": why, **more}
 
 
+def not_deployed(asked: dict, had: dict, stays: str = "") -> str:
+    """Why nothing changed when her mind's provider answered that it has no such model there (./vx ready asked it first,
+    settings/probe.py NOT_THERE): the model, whose provider, and what Viventium stays on (the profile it stays on, when
+    another profile was asked for)."""
+    mind, was = catalog.option("mind", asked.get("id", "")), catalog.option("mind", had.get("id", ""))
+    whose = f"your {mind['provider']} provider" if mind else "your provider"
+    if mind and was and mind["id"] == was["id"] and not stays:  # (the mind it runs on now: no longer there)
+        return f"Nothing changed: {whose} does not have {mind['model']} deployed, so Viventium keeps what it had."
+    keeps = stays or (was["model"] if was else "what it had")
+    return f"Nothing changed: {whose} does not have {mind['model'] if mind else 'that model'} deployed yet, so Viventium stays on {keeps}."
+
+
 def check(part: str, choice: dict, env: dict) -> str:
     """"" when this choice exists and can run here, else why not in plain words (never changes anything)."""
     ids = choice.get("use") if part == "hands" else [choice.get("id")]
@@ -1221,12 +1243,15 @@ def apply(want: dict) -> dict:
             # changed only after the call felt like a bug). What it needs was checked above.
             store.remember(lambda s: [keep_left(s, target, left)] + [remember_choice(s, part, chosen[part]) for part in PARTS if part in want])
             return {"ok": True, "state": show()}
-        if not runtime.ran(f"checking {target} before switching over", runtime.vx("ready", target, timeout=180)):
+        checked = runtime.vx("ready", target, timeout=180)
+        if not runtime.ran(f"checking {target} before switching over", checked):
             # Nothing was stopped, and the files are put back as they were. Why, in vx's own words, is in her settings
             # log; the page says what did not change.
             for file, text in before.items():
                 store.write(file, text)
             names = {p["id"]: p["name"] for p in now["profiles"]}
+            if checked.returncode == probe.NOT_THERE:  # (her mind's provider has no such model there)
+                return no(not_deployed(chosen["mind"], now["choices"]["mind"], names.get(profile, profile) if target != profile else ""))
             if target != profile:
                 return no(f"Nothing changed: {names.get(target, target)} cannot start on this Mac right now, so Viventium "
                           f"stays on {names.get(profile, profile)}.")

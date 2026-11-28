@@ -232,27 +232,28 @@ class FilesTold:
     def __init__(self, send, note) -> None:
         self.send, self.note, self.known = send, note, set()
 
-    async def _read(self) -> list[str]:
-        ids = await asyncio.to_thread(attachments.offered)
+    async def _read(self) -> tuple[list[str], list[str]]:  # (her offers, and which of them are pictures)
+        ids, pictures = await asyncio.to_thread(lambda: (attachments.offered(), attachments.offered_pictures()))
         self.known = set(ids)
-        return ids
+        return ids, pictures
 
     async def answer(self) -> str:  # (the page's ask, RPC "viv.files")
-        ids = await self._read()
+        ids, pictures = await self._read()
         self.note("files_asked", files=len(ids))
-        return json.dumps(ids)
+        return json.dumps({"ids": ids, "pictures": pictures})
 
     async def whole(self) -> None:
         try:
-            ids = await self._read()
+            ids, pictures = await self._read()
         except Exception as e:  # noqa: BLE001 (the page asks for it)
             self.note("error", source="files told", error=f"{type(e).__name__}: {str(e)[:160]}")
             return
-        await self.tell(ids, whole=True)
+        await self.tell(ids, whole=True, pictures=pictures)
 
-    async def tell(self, ids, whole: bool = False) -> None:
+    async def tell(self, ids, whole: bool = False, pictures=()) -> None:
         try:
-            await self.send(json.dumps({"ids": list(dict.fromkeys(ids)), "whole": whole}))
+            await self.send(json.dumps({"ids": list(dict.fromkeys(ids)), "whole": whole,
+                                        "pictures": list(dict.fromkeys(pictures))}))
         except Exception as e:  # noqa: BLE001 (the page's ask heals it)
             self.note("error", source="files told", error=f"{type(e).__name__}: {str(e)[:160]}")
 
@@ -311,7 +312,8 @@ async def show_file(ref: dict, room: str, channel: str, files: FilesTold, show, 
     if recorded.get(ref["sha256"]) != ref:
         relationship.append("assistant", link, channel=channel, call_id=room, files=[ref] if first else None)
     files.known.add(ref["id"])
-    await files.tell([ref["id"]])  # (before its link; a failure is noted, and its link still goes out)
+    await files.tell([ref["id"]], pictures=[ref["id"]] if attachments.picture(ref) else [])  # (before its link; a
+    # failure is noted, and its link still goes out)
     await show(link)
     note("file_offered", id=ref["id"], name=Path(ref["path"]).name)
 

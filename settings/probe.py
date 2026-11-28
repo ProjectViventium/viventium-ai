@@ -1,16 +1,19 @@
 """Can her mind be reached? One word asked of the chosen online model, the way a call asks it.
 
-    python -m settings.probe          ./vx ready: her mind as a call builds it, its declared backup with it. A key that
-                                      exists can still be refused, belong to another endpoint, or lack the model: said
-                                      here in one plain line, before anything of hers is stopped. Exit 0 when it answers.
-    python -m settings.probe answer   ./vx up, before "Ready" (vx mind_answers): her chosen online mind alone, never its
+    python -m settings.probe          her mind as a call builds it, its declared backup with it. A key that exists can
+                                      still be refused, belong to another endpoint, or lack the model: said in one plain
+                                      line. Exit 0 when it answers.
+    python -m settings.probe answer   ./vx up and ./vx ready (vx mind_answers): her chosen online mind alone, never its
                                       backup (vx asks that one itself), bounded in time (VX_MIND_WAIT seconds). Exit 0 when
-                                      a word came back; else 1, then what happened on one line, by structure ("refused
-                                      STATUS": its provider's own 4xx; "silent": no answer in time, the only one that may
-                                      pass by asking again; "failed [STATUS]": a server error, no connection, or an answer
-                                      with no word in it) and the same in plain words on the next (no gender, no path: the
-                                      app shows it).
+                                      a word came back; else NOT_THERE (3) when its provider has no such model there (a
+                                      setup that can never work: not_there), 1 for anything else, then what happened on one
+                                      line, by structure ("refused STATUS": its provider's own 4xx; "silent": no answer in
+                                      time, the only one that may pass by asking again; "failed [STATUS]": a server error,
+                                      no connection, or an answer with no word in it) and the same in plain words on the
+                                      next (no gender, no path: the app shows it).
 
+What is only for now (a key or a subscription refused, a limit, a server error, no answer in time) is her declared
+backup's to answer, at a start and in ./vx ready alike; only NOT_THERE is never covered by a backup (vx mind_answers).
 Either way an answer is a word: a stream that ends with none (usage only, or nothing) is not one."""
 import asyncio
 import os
@@ -26,6 +29,16 @@ REFUSED = {401: "{p} refused its key", 403: "{p} does not let its key use this m
 SIGNED_IN = {"xai_plan", "chatgpt_plan"}
 REFUSED_PLAN = {**REFUSED, 401: "{p} needs you to sign in again (Settings, System)", 402: "{p}'s limit is reached",
                 403: "{p} does not let your subscription be used here"}
+# A setup that can never work: the provider answered that it has no such model there (not deployed on that endpoint, or
+# not offered to that account). Exit code of `answer`, and of ./vx ready, so the settings page can say so.
+NOT_THERE = 3
+THERE_NOT = "{p} does not have the model {m}"  # (its plain words: the model as configured, never the provider's words)
+# Statuses that are only for now, whatever else the answer says: a key or a subscription refused (401, 403), a payment
+# or plan limit (402), no answer in time (408), a conflict (409), a limit (429). Her backup answers meanwhile.
+FOR_NOW = frozenset({401, 402, 403, 408, 409, 429})
+# Providers' own error codes for "no such model or deployment" (OpenAI, Azure OpenAI, Anthropic), matched whole: they
+# make another client error (400, 422) a setup that can never work, as HTTP 404 is by itself.
+NO_SUCH_MODEL = frozenset({"model_not_found", "DeploymentNotFound", "not_found_error"})
 
 
 class Unanswered(Exception):
@@ -56,6 +69,38 @@ def why(error: Exception, provider: str = "") -> str:
     return {**words, 404: "the model was not found there", 429: "the limit is reached"}.get(code) or ("no answer in time" if isinstance(error, asyncio.TimeoutError) else
                                                          "no word in its answer" if isinstance(error, Unanswered) else
                                                          f"{type(error).__name__}{f' {code}' if code else ''}")
+
+
+def codes(body) -> set:
+    """A provider's own error codes in its answer's body, by its structure only: "code" and "type", at its top and in
+    its "error" object (the OpenAI SDK keeps the inner object, Anthropic's the whole answer, a redacted one is JSON
+    text). Never its message."""
+    import json
+    if isinstance(body, (str, bytes)):
+        try:
+            body = json.loads(body)
+        except ValueError:
+            return set()
+    found, places = set(), [body]
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        places.append(body["error"])
+    for place in places:
+        if isinstance(place, dict):
+            found |= {str(place[k]) for k in ("code", "type") if isinstance(place.get(k), (str, int))}
+    return found
+
+
+def not_there(error: Exception) -> bool:
+    """Whether the provider answered that it has no such model there: a setup that can never work (NOT_THERE). Decided
+    by its HTTP status (404) or its own error code (NO_SUCH_MODEL) on another client error; a status in FOR_NOW is
+    never this, whatever its code says (a refused key or a limit is her backup's to answer)."""
+    from livekit.agents import APIStatusError
+    if not isinstance(error, APIStatusError) or getattr(error, "turned_off", False):
+        return False
+    code = error.status_code
+    if not 400 <= code < 500 or code in FOR_NOW:
+        return False
+    return code == 404 or bool(codes(error.body) & NO_SUCH_MODEL)
 
 
 def happened(error: Exception, provider: str) -> tuple[str, str]:
@@ -107,15 +152,20 @@ def answer(*, attended=False) -> int:
                        "refresh_unavailable": 503, "stream_ended": 503, "timeout": 504}.get(state, 401)
         print(f"{'failed' if status_code >= 500 else 'refused'} {status_code}")
         print(chatgpt_sign_in.STOP_WORDS.get(state, chatgpt_sign_in.STOP_WORDS["unavailable"]))
-        return 1
+        return 1  # (a subscription that does not offer the model is its backup's to answer, as any refusal of a plan)
     from brain.queen import _mind
     try:
         mind = _mind(provider, os.environ["QUEEN_MODEL"], os.environ.get("QUEEN_EFFORT"), os.environ.get("QUEEN_URL"))
         asyncio.run(asyncio.wait_for(ask(mind, wait), wait + 2))
     except Exception as e:  # noqa: BLE001 (any failure is the answer: decided by its type and status, never its words)
-        print(f"her mind did not answer: {type(e).__name__} {getattr(e, 'status_code', '')}".rstrip(), file=sys.stderr)
-        print("\n".join(happened(e, provider)))
-        return 1
+        there = not_there(e)
+        print(f"her mind did not answer: {type(e).__name__} {getattr(e, 'status_code', '')}{' (no such model there)' if there else ''}"
+              .rstrip(), file=sys.stderr)
+        kind, words = happened(e, provider)
+        if there:
+            words = THERE_NOT.format(p=NAMES.get(provider, provider), m=os.environ.get("QUEEN_MODEL", ""))
+        print(f"{kind}\n{words}")
+        return NOT_THERE if there else 1
     return 0
 
 

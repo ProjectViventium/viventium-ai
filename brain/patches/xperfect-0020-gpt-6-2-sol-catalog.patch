@@ -1,0 +1,115 @@
+diff --git a/runtime_phase1/src/workers_projects_runtime/conversation_provider.py b/runtime_phase1/src/workers_projects_runtime/conversation_provider.py
+index ae6602c..9d7491d 100644
+--- a/runtime_phase1/src/workers_projects_runtime/conversation_provider.py
++++ b/runtime_phase1/src/workers_projects_runtime/conversation_provider.py
+@@ -517,6 +517,12 @@ GLASSHIVE_MODELS: dict[str, HarnessModel] = {
+         native_model="gpt-6.1-sol", effort_choices=("low", "medium", "high", "xhigh", "max"),
+         recommended_effort="high", context_window=475_000,
+     ),
++    # GPT-6.2 Sol: the efforts and limits of GPT-6.1 Sol, on the same two routes.
++    "codex-cli:gpt-6.2-sol": HarnessModel(
++        id="codex-cli:gpt-6.2-sol", display_name="OpenAI / GPT-6.2 Sol", harness_profile="codex-cli",
++        native_model="gpt-6.2-sol", effort_choices=("low", "medium", "high", "xhigh", "max"),
++        recommended_effort="high", context_window=475_000,
++    ),
+     "grok-build:grok-4.7": HarnessModel(
+         id="grok-build:grok-4.7", display_name="Grok / Grok 4.7", harness_profile="grok-build",
+         native_model="grok-4.7", effort_choices=("default", "low", "medium", "high", "xhigh"),
+@@ -634,6 +640,10 @@ GLASSHIVE_MODELS: dict[str, HarnessModel] = {
+         id="direct-openai:gpt-6.1-sol", display_name="Direct / OpenAI / GPT-6.1 Sol",
+         harness_profile="direct-openai", native_model="gpt-6.1-sol",
+         effort_choices=("default", "low", "medium", "high", "xhigh", "max"), recommended_effort="high", context_window=1_050_000),
++    "direct-openai:gpt-6.2-sol": HarnessModel(
++        id="direct-openai:gpt-6.2-sol", display_name="Direct / OpenAI / GPT-6.2 Sol",
++        harness_profile="direct-openai", native_model="gpt-6.2-sol",
++        effort_choices=("default", "low", "medium", "high", "xhigh", "max"), recommended_effort="high", context_window=1_050_000),
+     "direct-anthropic:claude-opus-5-5": HarnessModel(
+         id="direct-anthropic:claude-opus-5-5", display_name="Direct / Anthropic / Opus 5.5",
+         harness_profile="direct-anthropic", native_model="claude-opus-5-5",
+diff --git a/runtime_phase1/tests/test_allowed_ai_policy.py b/runtime_phase1/tests/test_allowed_ai_policy.py
+index 16fc59b..37ff9b0 100644
+--- a/runtime_phase1/tests/test_allowed_ai_policy.py
++++ b/runtime_phase1/tests/test_allowed_ai_policy.py
+@@ -695,3 +695,12 @@ def test_origin_policy_still_limits_default_all_child(tmp_path):
+             assert exc.code == "scope_missing"
+         else:
+             raise AssertionError("Missing origin scope was ignored")
++
++
++def test_allowed_ai_maps_gpt_6_2_sol_to_its_exact_catalog_models():
++    service = AllowedAiPolicyService.__new__(AllowedAiPolicyService)  # (catalog lookups need no store)
++    for profile in ("codex-cli", "direct-openai"):
++        assert service._model_id(profile, "gpt-6.2-sol") == f"{profile}:gpt-6.2-sol"
++        assert service._model_id(profile, f"{profile}:gpt-6.2-sol") == f"{profile}:gpt-6.2-sol"
++        assert service._model_id(profile, "gpt-6.1-sol") == f"{profile}:gpt-6.1-sol"
++    assert service._model_id("codex-cli", "gpt-6.3-sol") == ""
+diff --git a/runtime_phase1/tests/test_api.py b/runtime_phase1/tests/test_api.py
+index 2647fee..f462cfa 100644
+--- a/runtime_phase1/tests/test_api.py
++++ b/runtime_phase1/tests/test_api.py
+@@ -14910,10 +14910,10 @@ def test_direct_profile_model_options_come_from_runtime_catalog(tmp_path, monkey
+         assert response.status_code==200,response.text
+         for item in response.json()['items']:
+             models=[model for model in GLASSHIVE_MODELS.values() if model.harness_profile==item['profile']]
+-            assert len(models)==1
+-            assert item['models']==[{'id':models[0].id,'native_model':models[0].native_model,
+-                'effort_choices':list(models[0].effort_choices),'recommended_effort':models[0].recommended_effort}]
+-            assert 'none' not in item['models'][0]['effort_choices']
++            assert models
++            assert item['models']==[{'id':model.id,'native_model':model.native_model,
++                'effort_choices':list(model.effort_choices),'recommended_effort':model.recommended_effort} for model in models]
++            assert all('none' not in model['effort_choices'] for model in item['models'])
+ 
+ 
+ def test_assign_run_drops_a_saved_codex_model_once_no_model_is_configured(
+diff --git a/runtime_phase1/tests/test_conversation_provider.py b/runtime_phase1/tests/test_conversation_provider.py
+index 9544ba2..dead89c 100644
+--- a/runtime_phase1/tests/test_conversation_provider.py
++++ b/runtime_phase1/tests/test_conversation_provider.py
+@@ -784,12 +784,12 @@ def test_models_expose_exact_harness_registry(tmp_path, monkeypatch):
+     assert response.status_code == 200
+     models = {item["id"]: item for item in response.json()["data"]}
+     assert set(models) == {
+-        "codex-cli:gpt-6.1-sol", "grok-build:grok-4.7", "grok-build:grok-4.7-build-fast",
++        "codex-cli:gpt-6.1-sol", "codex-cli:gpt-6.2-sol", "grok-build:grok-4.7", "grok-build:grok-4.7-build-fast",
+         "codex-cli:gpt-6-astra", "codex-cli:gpt-6-sol", "codex-cli:gpt-6-luna",
+         "codex-cli:gpt-5.6-sol", "codex-cli:gpt-5.6-luna", "codex-cli:gpt-5.6-terra",
+         "codex-cli:gpt-5.4", "codex-cli:native-default",
+         "claude-code:claude-opus-5-5", "claude-code:claude-opus-5", "claude-code:opus",
+-        "direct-openai:gpt-6.1-sol", "direct-anthropic:claude-opus-5-5", "direct-xai:grok-4.7",
++        "direct-openai:gpt-6.1-sol", "direct-openai:gpt-6.2-sol", "direct-anthropic:claude-opus-5-5", "direct-xai:grok-4.7",
+     }
+     assert models["codex-cli:gpt-5.6-sol"]["display_name"] == "Codex / GPT-5.6 Sol"
+     assert models["codex-cli:gpt-5.6-sol"]["recommended_effort"] == "medium"
+@@ -7643,6 +7643,16 @@ def test_current_catalog_models_keep_exact_native_identity(
+     assert model.api_payload()["native_model"] == native_model
+ 
+ 
++@pytest.mark.parametrize("profile", ["codex-cli", "direct-openai"])
++def test_gpt_6_2_sol_has_the_exact_shape_of_gpt_6_1_sol(profile):
++    older, newer = GLASSHIVE_MODELS[f"{profile}:gpt-6.1-sol"], GLASSHIVE_MODELS[f"{profile}:gpt-6.2-sol"]
++    assert (newer.id, newer.harness_profile, newer.native_model) == (f"{profile}:gpt-6.2-sol", profile, "gpt-6.2-sol")
++    assert newer.display_name == older.display_name.replace("GPT-6.1 Sol", "GPT-6.2 Sol")
++    assert (newer.effort_choices, newer.recommended_effort, newer.context_window) == (
++        older.effort_choices, older.recommended_effort, older.context_window)
++    assert newer.api_payload(readiness={})["native_model"] == "gpt-6.2-sol"
++
++
+ @pytest.mark.parametrize("delta", [None, {15, 16}])
+ def test_current_source_ordinals_preserve_global_labels_and_delta_content(delta):
+     from workers_projects_runtime.conversation_provider import _admit_conversation_history
+diff --git a/runtime_phase1/tests/test_conversation_provider_model_selection.py b/runtime_phase1/tests/test_conversation_provider_model_selection.py
+index 21c61f7..c94839a 100644
+--- a/runtime_phase1/tests/test_conversation_provider_model_selection.py
++++ b/runtime_phase1/tests/test_conversation_provider_model_selection.py
+@@ -11,8 +11,8 @@ from workers_projects_runtime.native_model_selection import ModelConfigurationRe
+ 
+ 
+ @pytest.mark.parametrize("model_id", [
+-    "direct-xai:grok-4.7", "direct-openai:gpt-6.1-sol",
+-    "direct-anthropic:claude-opus-5-5", "codex-cli:gpt-6.1-sol",
++    "direct-xai:grok-4.7", "direct-openai:gpt-6.1-sol", "direct-openai:gpt-6.2-sol",
++    "direct-anthropic:claude-opus-5-5", "codex-cli:gpt-6.1-sol", "codex-cli:gpt-6.2-sol",
+     "claude-code:claude-opus-5-5", "claude-code:opus",
+     "codex-cli:native-default", "grok-build:grok-4.7",
+     "grok-build:grok-4.7-build-fast",

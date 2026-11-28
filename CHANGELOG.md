@@ -2,6 +2,39 @@
 
 What changed for people who use Viventium AI, one entry per public release, newest first.
 
+## 0.5.0 experimental · release 60 · 28 November 2026
+
+- A result of background work comes back where you asked for it, once. Before, while the backup on your Mac answered
+  for your chosen mind, a result asked for on Telegram could be held for the conversation page instead: a file, a
+  picture or an answer never reached Telegram until you asked again, and the page then told it a second time. Now a
+  reply from the backup is known as the backup's from its first word, a place to tell a result is one of telegram,
+  call or the page (or, when none is named, where you asked), and an answer that gives a result marks it told.
+  Checked with stand-in minds on the same path: the result is told on Telegram, and never again on the page. A
+  reminder set the same way comes where it was asked for too, never only on the page.
+- Viventium's first words after setup are now one short question to you by name, and it waits for your answer; it no
+  longer opens with the time, the Mac or what it is. When you answer, it reacts to what you said, then tells you about
+  Wing and Settings in a line each, lighting each in the panel as it speaks, and asks whether you want to see more or
+  jump into something. Those lines are written during setup with the first question, so they play at once; if your
+  answer starts work, they are left out. Checked on Grok on your subscription, old against new, with the greeting
+  written as it opens (no setup draft), on made-up first answers: its first words in about 3 seconds (about 75 before,
+  when most often nothing came), and its reply about 8 to 10 seconds after you began answering (about 78 before).
+- When the conversation page catches up on results told while it was closed, each file is offered once, a picture is
+  shown as a picture (with its download link), and a file link that points at nothing is no longer drawn. Checked on
+  the page with results held the same way.
+- GPT-6.2 Sol can be chosen as Viventium's mind on your own OpenAI key. If your OpenAI provider does not offer it yet,
+  Settings says so plainly and nothing changes. Background Workers on a Codex sign-in stay on GPT-6.1 Sol until
+  GPT-6.2 Sol is measured on ordinary Worker jobs.
+- A mind whose key or subscription is refused, or has reached its limit, at the moment Viventium starts no longer stops
+  it from starting: the backup on your Mac answers meanwhile, as it does during a conversation. Only a model your
+  provider does not have at all is refused, with one plain sentence. Checked with a stand-in provider answering each
+  of those ways.
+- The install guide matches the app as it is now: the menu bar's power control is Turn off, and its pictures show the
+  current panel.
+- Known limits: GPT-6.2 Sol's speed and quality as Viventium's mind are not measured here yet. Asking on Telegram for a
+  result to be shown on the conversation page instead is not understood yet: it comes back where you asked. A longer
+  first answer after setup can take 11 to 30 seconds to be answered on Grok, and after answering a question you asked
+  first, Viventium still tells you about Wing and Settings.
+
 ## 0.5.0 experimental · release 59 · 28 November 2026
 
 - In Settings on a phone's width, the Brain section's View live and Speed and smarts stay side by side on their own
@@ -134,9 +167,9 @@ What changed for people who use Viventium AI, one entry per public release, newe
 - Viventium's marker for "start a new message here" no longer shows up in your messages. It was split only when it
   stood on its own line, or mid-line with spaces around it on some minds; written glued to the next word it reached
   you as text. Now, outside code and quotes, it starts a new message wherever it stands, on every mind, and is never
-  spoken or kept in her history. Checked without a model on three kinds of mind, on real replies where it showed and
+  spoken or kept in its history. Checked without a model on three kinds of mind, on real replies where it showed and
   on made-up ones: it never remains (before, the glued ones kept it); in code, quotes or written escaped it stays.
-- Each tool Viventium uses while answering on Telegram is now kept in her own log, with when it started and ended,
+- Each tool Viventium uses while answering on Telegram is now kept in its own log, with when it started and ended,
   as on calls, so a reply that went wrong can be looked into afterwards.
 - When you ask about something Viventium found for you before, Deep memory now searches each of your recent messages on
   its own. Before, it searched them as one, and older messages could push what you asked about out of the few
@@ -161,7 +194,7 @@ What changed for people who use Viventium AI, one entry per public release, newe
 ## 0.5.0 experimental · release 54 · 27 November 2026
 
 - On a call in Listen only, or in Wing when Viventium takes your words as meant for someone else, the page now says so
-  the moment she hears you: one line under the mode switch, with a Talk button. One tap and she answers from then on,
+  the moment it hears you: one line under the mode switch, with a Talk button. One tap and it answers from then on,
   and Talk is kept for your next call. The mode you choose is still kept between calls; before, a mode chosen in an
   earlier call could leave a call silent with nothing on the screen to say why.
 - For a typed or Telegram message, when your chosen mind takes the request and then gives no word in its time, it is
@@ -172,7 +205,7 @@ What changed for people who use Viventium AI, one entry per public release, newe
   the backup, 3 of 3).
 - When Viventium restarts, each part's log from its last run is kept (the last five), instead of being emptied, so a
   problem can still be looked into afterwards.
-- `./vx test-telegram` refuses to run while Viventium is running: it would have stopped her and answered its test
+- `./vx test-telegram` refuses to run while Viventium is running: it would have stopped Viventium and answered its test
   messages in your own Telegram chat.
 
 ## 0.5.0 experimental · release 53 · 26 November 2026

@@ -8,8 +8,10 @@
 // the page asks again after a reconnect and whenever a link names an id it does not know (healer), so a word of hers it
 // missed heals itself.
 
-export type Offered = { known: boolean; ids: ReadonlySet<string> };
-export const NOT_YET: Offered = { known: false, ids: new Set() };
+// Pictures: which of her offers the page draws as themselves, beside their links (her agent's word, from each file's
+// own type: core/attachments.py picture), never decided on her words for them.
+export type Offered = { known: boolean; ids: ReadonlySet<string>; pictures: ReadonlySet<string> };
+export const NOT_YET: Offered = { known: false, ids: new Set(), pictures: new Set() };
 const FILE = '#viv-file-';
 const ID = /^[a-f0-9]{32}$/;
 
@@ -22,26 +24,49 @@ export function drawn(href: string | undefined, offered: Offered): 'file' | 'lab
   return !offered.known || offered.ids.has(id) ? 'file' : 'label';
 }
 
-/** Her agent's word on new offers (`whole` false: what is known so far stays as it was), or her whole set. */
-export function add(offered: Offered, ids: unknown, whole: boolean): Offered {
-  const more = Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
-  return { known: offered.known || whole, ids: new Set([...offered.ids, ...more]) };
+const strings = (list: unknown): string[] =>
+  Array.isArray(list) ? list.filter((id): id is string => typeof id === 'string') : [];
+
+/** Her agent's word on new offers (`whole` false: what is known so far stays as it was), or her whole set; with which
+ *  of them are pictures. */
+export function add(offered: Offered, ids: unknown, whole: boolean, pictures?: unknown): Offered {
+  return {
+    known: offered.known || whole,
+    ids: new Set([...offered.ids, ...strings(ids)]),
+    pictures: new Set([...offered.pictures, ...strings(pictures)]),
+  };
 }
 
-/** Asks her agent for her whole set until it answers with a list of ids (her agent not in the room yet, or not
+/** Her agent's answer to the page's ask: her whole set, as {ids, pictures}, or a plain list of ids (an agent from before
+ *  pictures). Anything else is no answer. */
+export function answered(answer: unknown): { ids: string[]; pictures: string[] } | undefined {
+  if (Array.isArray(answer)) return { ids: strings(answer), pictures: [] };
+  if (answer && typeof answer === 'object' && Array.isArray((answer as { ids?: unknown }).ids)) {
+    const { ids, pictures } = answer as { ids: unknown; pictures?: unknown };
+    return { ids: strings(ids), pictures: strings(pictures) };
+  }
+  return undefined;
+}
+
+/** Whether a link of hers is drawn as a picture: a file she offered that her agent says is one. */
+export function picture(href: string | undefined, offered: Offered): boolean {
+  return drawn(href, offered) === 'file' && offered.pictures.has(href!.slice(FILE.length));
+}
+
+/** Asks her agent for her whole set until it answers with it (answered; her agent not in the room yet, or not
  *  answering yet: asked again `wait` ms later), at most `tries` times, while `here()`. True once it answered. */
 export async function ask(
   answer: () => Promise<string>,
-  got: (ids: string[]) => void,
+  got: (ids: string[], pictures: string[]) => void,
   here: () => boolean,
   wait = 500,
   tries = 240
 ): Promise<boolean> {
   for (let n = 0; n < tries && here(); n++) {
     try {
-      const ids: unknown = JSON.parse(await answer());
-      if (Array.isArray(ids)) {
-        if (here()) got(ids);
+      const set = answered(JSON.parse(await answer()));
+      if (set) {
+        if (here()) got(set.ids, set.pictures);
         return true;
       }
     } catch {

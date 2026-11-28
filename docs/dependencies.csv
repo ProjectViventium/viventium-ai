@@ -894,7 +894,7 @@ model,mflux-community/z-image-turbo-mflux-q8,4ccff28,"Apache-2.0 (its model card
 model,mflux-community/qwen-image-2-1-mflux-q8,f5c8cc7 (not installed),Qwen Research License (research and evaluation only without commercial licence)
 model,unsloth/MiniMax-H3-GGUF,babc040 (not installed),"MiniMax H3 Community License (territory, attribution and commercial terms)"
 model,MIT/ast-finetuned-audioset-10-10-0.4593,f826b80,BSD-3-Clause (test download excluded from the release)
-vendored: xPerfect (brain/xperfect),xPerfect,07dac78 + brain/patches 0001 0002 0004-0007,Apache-2.0
+vendored: xPerfect (brain/xperfect),xPerfect,07dac78 + brain/patches 0001 0002 0004-0007 0011-0016 0018-0020,Apache-2.0
 vendored: call page,agent-starter-react (LiveKit),9e1fc2f,MIT
 vendored: font,Inter Tight,variable,SIL OFL 1.1 (licence file beside it)
 vendored: font,Public Sans,variable,SIL OFL 1.1 (licence file beside it)

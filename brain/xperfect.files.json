@@ -1374,7 +1374,7 @@
     },
     "runtime_phase1/src/workers_projects_runtime/conversation_provider.py": {
       "executable": false,
-      "sha256": "b2fd8357c5849647767be733f002895b4e2289b4632b6958c20db4105929dae8"
+      "sha256": "36fbb7828e872f5ebfe76731e07bccbb04b0e1281e098cc7de2d51315f95580d"
     },
     "runtime_phase1/src/workers_projects_runtime/coordination_toolset.py": {
       "executable": false,
@@ -2290,11 +2290,11 @@
     },
     "runtime_phase1/tests/test_allowed_ai_policy.py": {
       "executable": false,
-      "sha256": "0a0bcc95490effdca648acfbf25445777f06c5dfcf5d329456db2faacd34173f"
+      "sha256": "9d50c449594b91cd24f3c67d5a6a0677c1e7f5b15c08dcbbb0daaf51c375d5cd"
     },
     "runtime_phase1/tests/test_api.py": {
       "executable": false,
-      "sha256": "d4721af1e19dcb3c7bda2a00d116ba5d5a510922c2caa992dd2fb6ad062446d9"
+      "sha256": "dfa247bc99f2b58a86967095d3c59d79174b96b31af3d64b686cee6a0a052d84"
     },
     "runtime_phase1/tests/test_application_boundary.py": {
       "executable": false,
@@ -2450,7 +2450,7 @@
     },
     "runtime_phase1/tests/test_conversation_provider.py": {
       "executable": false,
-      "sha256": "cbcf9866160015943d06d622153186d9c609e2cb08a363bb06e9c7900699230b"
+      "sha256": "ddc43079fe71d1b4828d03cd30ecdfd244a87023b6ae37afe55ac3207b4a56bd"
     },
     "runtime_phase1/tests/test_conversation_provider_active_poll.py": {
       "executable": false,
@@ -2466,7 +2466,7 @@
     },
     "runtime_phase1/tests/test_conversation_provider_model_selection.py": {
       "executable": false,
-      "sha256": "ee98cc55addc52a6612f9a7686aaba300845a98d77738bbdb53ca687dd08f6f7"
+      "sha256": "d4043d042079ab83a64ea9c9b03bfabf86b556ae02c261147334b4f6c31cf07b"
     },
     "runtime_phase1/tests/test_conversation_provider_recovery.py": {
       "executable": false,
@@ -3395,6 +3395,9 @@
     },
     "xperfect-0019-durable-conversation-stop.patch": {
       "sha256": "98dc8e5d2e2f936d21d04768e527428c7764ad53a4a23e1c0553f770165f2169"
+    },
+    "xperfect-0020-gpt-6-2-sol-catalog.patch": {
+      "sha256": "0985c6351904f81023e486fddc527043f4b18bebd71a86edaaa94076a348a662"
     }
   },
   "pin": "07dac785b8d5398dc5722b16e7d89784fe43a07e"

@@ -328,6 +328,17 @@ def release(job_id: str = "") -> None:
                 job["owner"] = None
 
 
+def take(job_id: str, version) -> bool:
+    """This process owns one job nobody alive owns (or its own), still at this outcome (`version`): held while it decides
+    about it (a verdict on words that may have given it), so no other channel takes it meanwhile. False changes nothing."""
+    with _locked() as jobs:
+        job = jobs.get(job_id)
+        if job is None or job.get("version") != version or (job.get("owner") != os.getpid() and _alive(job.get("owner"))):
+            return False
+        job["owner"] = os.getpid()
+        return True
+
+
 def failed(job_id: str, channel: str, why: str) -> bool:
     """A telling that did not reach him on `channel` (a refused or failed send, nobody there to hear it). After TRIES on
     one channel the job is released, and that channel waits (WAIT, doubling) before it tries again. True when released."""

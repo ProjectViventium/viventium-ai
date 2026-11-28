@@ -91,6 +91,9 @@ SAY_THOUGHT = ("You chose to continue your thought now. In a sentence or two, in
                "thinking, cortices or checks:")
 
 
+# Her lines on the controls, written while her first line played and they answered, are waited for this long after her
+# answer to their first words ends; later, they are dropped (she has moved on with them).
+TOUR_WAIT = 8.0
 QUEEN_BACKUP_WAIT = 15.0  # seconds one attempt of her online mind may take before its backup answers instead
 # Within that one attempt, a request her online mind's provider answers with a server error (5xx) before any word of it
 # is asked once more at once, in what is left of the attempt's time (_OnlineMind): measured, a provider answered 3
@@ -1940,6 +1943,10 @@ Args:
     tell_at: Only when they named when they want to hear it: local ISO date and time, e.g.
         2026-11-16T17:00.
 """
+# Where a result is told, by the typed value hand_off_to's tell_on gives, to the channel id a job keeps as its destination
+# (core/jobs TAKERS). Any other value, "chat" included (on Telegram it reads as "this chat"), names no channel: the
+# result goes where they asked from, as with none.
+TELL_ON = {"telegram": "telegram", "call": "call", "page": "typed"}
 # A harness as her model names it for one job, and as the question describes it
 PICK = {"claude-code": ("claude", "Anthropic's Claude"), "codex-cli": ("codex", "OpenAI's GPT, in Codex"),
         "grok-build": ("grok", "Grok Build"),
@@ -2356,8 +2363,11 @@ class Workers(Toolset):
                                                       fields={"quiet": quiet, "tell_on": tell_on, "tell_at": tell_at})
                 quiet, tell_on, tell_at = False, "", ""
             told = {"quiet": True} if quiet else {}
-            if where := {"telegram": "telegram", "call": "call", "chat": "typed"}.get(tell_on.strip().lower(), ""):
+            if where := TELL_ON.get(tell_on.strip().lower(), ""):
                 told["dest"] = where  # (named, so kept: even this channel's own name)
+            elif tell_on.strip():
+                getattr(queen, "record", self.record)("hands", job=job, ignored="a place hand_off_to does not name",
+                                                      fields={"tell_on": tell_on})
             with contextlib.suppress(ValueError):
                 if tell_at.strip():
                     told["not_before"] = dt.datetime.fromisoformat(tell_at.strip()).timestamp()
@@ -3533,7 +3543,11 @@ async def schedule(ctx: RunContext, when: str, what: str, repeat: str = "once", 
         moment = dt.datetime.fromisoformat(when)
     except ValueError:
         raise ToolError(f"'{when}' is not an ISO date and time like 2026-11-08T17:00.") from None
-    where = {"telegram": "telegram", "call": "call", "chat": "typed"}.get(to.strip().lower(), "")
+    # (by its typed value, as hand_off_to's tell_on: any other value, "chat" included, is where they asked from)
+    where = TELL_ON.get(to.strip().lower(), "")
+    if to.strip() and not where:
+        asked_on = getattr(getattr(getattr(ctx, "session", None), "current_agent", None), "channel", "")
+        where = asked_on if asked_on in jobs.TAKERS else ""
     from core import xclock
     if zone.strip() == xclock.zone():  # (this Mac's own zone is no zone: the moment follows him when he travels)
         zone = ""
@@ -3718,6 +3732,15 @@ class Queen(Agent):
         self._last_activity = time.monotonic()
         self.first_speech = None
         self.first_segments: tuple[greeting.Segment, ...] = ()
+        # (her answer to their first words after her first line: that turn, its note, the controls it tells them of)
+        self._first_answer: tuple[int, str, tuple[str, ...]] | None = None
+        self._first_answer_speech = None
+        # (her lines on the controls, written ahead, and the speech that plays them right after that answer: _tour)
+        self.first_tour: tuple[greeting.Segment, ...] = ()
+        self._tour_task: asyncio.Future | None = None
+        self.first_tour_speech: asyncio.Future | None = None
+        self._first_answer_jobs: set = set()
+        self._first_voice = False
         self._plan_speeches = weakref.WeakKeyDictionary()
         self._plan_turns = {}
         self._first_audio = None
@@ -4042,6 +4065,12 @@ class Queen(Agent):
             yield chunk
 
     async def _first_greeting_node(self, chat_ctx):
+        if (answer := self._first_answer) and answer[2] and not self.first_tour and self._tour_task is None:
+            # her lines on the controls, written while her first line plays and they answer (none from setup)
+            options = self.session.conn_options.llm_conn_options
+            self._tour_task = asyncio.ensure_future(greeting.plan_tour(
+                self.session.llm, self._tour_instructions, answer[2],
+                dataclasses.replace(options, timeout=max(options.timeout, greeting.FIRST_WAIT))))
         if not self.first_segments:
             options = self.session.conn_options.llm_conn_options
             options = dataclasses.replace(options, timeout=max(options.timeout, greeting.FIRST_WAIT))
@@ -4053,7 +4082,7 @@ class Queen(Agent):
                     accounts.mind_first_failure(error)
                 log.info("first greeting draft unavailable: %s", type(error).__name__)
             if not self.first_segments:
-                chat_ctx.add_message(role="system", content=greeting.FIRST_CLOSE + " Skip the menu-bar tour.")
+                chat_ctx.add_message(role="system", content=greeting.FIRST_CLOSE)
                 async for chunk in bounded(Agent.default.llm_node(self, chat_ctx, [], ModelSettings())):
                     yield chunk
                 return
@@ -4437,7 +4466,13 @@ class Queen(Agent):
 
     def _mind_answering(self, by: str, why: str, speech) -> None:
         """A reply of hers got its first word from her chosen mind or its backup: when that differs from what the person
-        was last told, they are told once, plainly, in the conversation (shown, and kept in her history)."""
+        was last told, they are told once, plainly, in the conversation (shown, and kept in her history).
+        Her backup's first word, a word or a tool call, makes the reply the backup's (Queen._decided) at once, before
+        any of its tool calls runs (_observed_mind reports it before the chunk goes on), on every path its backup
+        answers: her mind set aside, its key unavailable, or a request it was never asked (no plan authority), where
+        MIND["aside"] stays False. A reply's id is its own session's, so only the Queen it belongs to ever reads it."""
+        if by == "backup":
+            self._aside_made(speech)
         try:
             mine = speech is not None and self.session.current_speech is speech
         except Exception:  # noqa: BLE001 (no session yet)
@@ -4891,10 +4926,13 @@ class Queen(Agent):
     async def _covered(self, speech) -> None:
         """A reply of hers to his words may have given him a result (he asked "is it done?"): her own declaration says
         so where her mind decides its tools, else one word from the model for each result still to tell. Then it is told
-        there, and no second telling repeats it. A result held, kept quiet or unconfirmed, told when he asked, too."""
+        there, and no second telling repeats it. A result held, kept quiet or unconfirmed, told when he asked, too; and
+        one given to her mind here but not queued here (bound for another channel: _given_untold)."""
         declared = self.declared.pop(speech.id, {}) if self._decided(speech) else {}  # (a backup's reply: its judge decides)
         self.declared.pop(speech.id, None)
-        pending = [(job, result, self.untold_v.get(job)) for job, result in self.untold if job not in declared][:2]
+        queued = {job for job, _ in self.untold}  # (this channel's own queue: only these are queued again on a "no")
+        pending = [(job, result, self.untold_v.get(job)) for job, result in self.untold if job not in declared]
+        pending = (pending + [given for given in self._given_untold() if given[0] not in declared])[:2]
         if not declared and (self._decided(speech) or not pending):
             return
         receipt = await self.receipt(speech)
@@ -4911,20 +4949,47 @@ class Queen(Agent):
             saved = jobs.get(job)
             if not saved or saved.get("version") != version or not jobs.tellable(saved):
                 continue
-            if verbatim(worker_words(saved), receipt.words):
-                await self._settle_covered(job, saved, receipt, tool_results=tool_results)
-                continue
-            if not jobs.mark(job, version, checking=True):  # (a verdict out: not told meanwhile)
+            # (one given here and let go is held by this channel for its verdict, so no channel takes it meanwhile;
+            # let go again unless her words gave it)
+            held = job not in queued
+            if held and not jobs.take(job, version):
                 continue
             try:
-                word = await asyncio.to_thread(helper_word, *said_question(
-                    told_what(saved), f"The result: {result}", receipt.words, tool_results=tool_results), BEAT_WAIT, False)
+                if verbatim(worker_words(saved), receipt.words):
+                    await self._settle_covered(job, saved, receipt, tool_results=tool_results)
+                    held = False
+                    continue
+                if not jobs.mark(job, version, checking=True):  # (a verdict out: not told meanwhile)
+                    continue
+                try:
+                    word = await asyncio.to_thread(helper_word, *said_question(
+                        told_what(saved), f"The result: {result}", receipt.words, tool_results=tool_results), BEAT_WAIT, False)
+                finally:
+                    jobs.mark(job, version, checking=False)
+                if word.startswith("y"):
+                    await self._settle_covered(job, jobs.get(job), receipt, version, tool_results=tool_results)
+                    held = False
+                elif job in queued and job not in (j for j, _ in self.untold):
+                    self.tell(job, result, version)  # (its own telling, as before)
             finally:
-                jobs.mark(job, version, checking=False)
-            if word.startswith("y"):
-                await self._settle_covered(job, jobs.get(job), receipt, version, tool_results=tool_results)
-            elif job not in (j for j, _ in self.untold):
-                self.tell(job, result, version)  # (its own telling, as before)
+                if held:
+                    jobs.release(job)
+
+    def _given_untold(self) -> list[tuple[str, str, object]]:
+        """Outcomes her mind was given (noted: its Worker result is in her context) that a channel would still tell by
+        itself, outside this channel's own queue, and that this channel may settle (its own or nobody's): one bound for
+        another channel (dest), or let go after failed tellings. Her reply to his words may give one ("did you find
+        it?"): it is judged as her queue's are (Queen._covered), so no channel tells it again. (job, result, version)."""
+        queued = {job for job, _ in self.untold}
+        given = []
+        for saved in jobs.open_jobs():
+            version, telling = saved.get("version"), saved.get("telling") or {}
+            if saved["job_id"] in queued or saved.get("noted", "") != version or not jobs.tellable(saved) \
+                    or saved.get("checking") or saved.get("owner") not in (os.getpid(), None) \
+                    or (telling.get("version") == version and telling.get("state") == "presenting"):
+                continue
+            given.append((saved["job_id"], saved["result"], version))
+        return given
 
     async def _settle_covered(self, job: str, saved: dict, receipt: "Receipt", version=None, *, tool_results=()) -> None:
         """Her reply gave him this outcome (`version`: the one her words were judged to give; unset, the job's own now).
@@ -4995,10 +5060,30 @@ class Queen(Agent):
         """Open with a finished setup draft or write live in the same interruptible reply."""
         self._first_controls = greeting.first_controls(voice_controls=setup.get("voice_controls", voice), tour=tour)
         self._first_instructions = greeting.first_instructions(setup, voice=voice, tour=tour)
-        self.first_segments = greeting.take_first(setup, self._first_controls, voice=voice)
-        self.record("greeting", ahead=bool(self.first_segments), first=True, voice=voice, tour=tour)
+        controls = greeting.answer_controls(voice_controls=setup.get("voice_controls", voice), tour=tour)
+        self._tour_instructions = greeting.tour_instructions(setup, voice=voice, controls=controls)
+        self.first_segments, self.first_tour = greeting.take_first(setup, controls, voice=voice)
+        self._first_voice = voice
+        self.record("greeting", ahead=bool(self.first_segments), toured=bool(self.first_tour), first=True, voice=voice,
+                    tour=tour)
+        self._first_answer = (self.turn + 1, greeting.first_answer(setup, controls), controls)  # (their next words)
+        speech = self._play_first()
+
+        def finish(speech):
+            if self.first_segments and not speech.interrupted:
+                accounts.mind_answered()
+            if not _said(speech):
+                self._first_answer = None  # (no first line was said: their words answer nothing of hers)
+        speech.add_done_callback(finish)
+        return speech
+
+    def _play_first(self):
+        """Her first line, or her lines on the controls after it (first_segments, each lighting its control as it
+        plays), in one interruptible reply."""
+        self._first_index, self._first_playing = 0, False
         self.first_speech = self._reply(plan=greeting.first_admission(), chat_ctx=ChatContext.empty(),
                                         instructions=self._first_instructions, allow_interruptions=True, tools=[])
+        voice = self._first_voice
         self._first_audio = audio = self.session.output.audio if voice and self.session.output.audio_enabled else None
 
         if audio is not None:
@@ -5012,19 +5097,43 @@ class Queen(Agent):
 
             audio.on("playback_started", started)
             audio.on("playback_finished", ended)
+        segments = self.first_segments
 
         def finish(speech):
-            if self.first_segments and not speech.interrupted:
-                accounts.mind_answered()
             if audio is not None:
                 audio.off("playback_started", started)
                 audio.off("playback_finished", ended)
-            if any(segment.control for segment in self.first_segments):
+            if any(segment.control for segment in segments):
                 with contextlib.suppress(OSError):
                     live_state.clear_control()
 
         self.first_speech.add_done_callback(finish)
         return self.first_speech
+
+    async def _tour(self, turn: int):
+        """Her lines on the controls, right after her answer to their first words: dropped when that turn started work
+        or read her guide (the hands check's act or guide, or her own hand-off), when they spoke again meanwhile, or
+        when the lines were not ready within TOUR_WAIT of her answer's end."""
+        why = ""
+        if not self.first_tour and self._tour_task is not None:
+            try:
+                self.first_tour = await asyncio.wait_for(asyncio.shield(self._tour_task), TOUR_WAIT)
+            except Exception as error:  # noqa: BLE001 (a missing line on the controls is never an error of hers)
+                why = f"not written ({type(error).__name__})"
+        if not self.first_tour:
+            why = why or "not written"
+        elif self.turn != turn:
+            why = "they spoke again"
+        elif {j["job_id"] for j in jobs.open_jobs()} - self._first_answer_jobs:
+            why = "work started"
+        elif not self.present():
+            why = "nobody there"
+        if why:
+            self.record("greeting", tour="dropped", why=why)
+            return None
+        self.first_segments = self.first_tour
+        self.record("greeting", tour="played")
+        return await self._play_first()
 
     async def greet(self, ready: list[tuple[str, str]], running: list[str], *, already_opened: bool = False) -> None:
         """A greeting only; results from earlier follow it, each in its own reply. A greeting asked to carry
@@ -5161,6 +5270,20 @@ class Queen(Agent):
         if chat is not None:
             await self.update_chat_ctx(chat)
 
+    def _first_answered(self, speech) -> None:
+        """Her answer to their first words is done: its note goes with it, never into a later turn, and her lines on the
+        controls follow it (_tour), unless it was cut off, said nothing, or used a tool (a hand-off, her guide)."""
+        if self._first_answer_speech is not speech:
+            return
+        turn, _, controls = self._first_answer
+        self._first_answer, self._first_answer_speech = None, None
+        if controls and not speech.interrupted and _said(speech) and not any(
+                item.type == "function_call" for item in speech.chat_items):
+            self.first_tour_speech = asyncio.ensure_future(self._tour(turn))
+        elif controls:
+            self.record("greeting", tour="dropped", why="cut off" if speech.interrupted else
+                        "nothing said" if not _said(speech) else "her answer used a tool")
+
     def _tool_ids(self) -> list[str]:
         return [getattr(tool, "id", "") for tool in self.tools]
 
@@ -5241,6 +5364,10 @@ class Queen(Agent):
             raise
         if isinstance(queen, Queen):
             queen._direct_replies.add(speech)
+            if queen._first_answer and queen._first_answer[0] == queen.turn:  # (her answer to their first words)
+                queen._first_answer_speech = speech
+                queen._first_answer_jobs = {j["job_id"] for j in jobs.open_jobs()}
+                speech.add_done_callback(queen._first_answered)
             if os.environ.get("QUEEN") == "chatgpt_plan":
                 words = options.get("user_input")
                 queen._plan_speeches[speech] = queen._plan_turns.pop(getattr(words, "created_at", None), None)
@@ -5342,6 +5469,8 @@ class Queen(Agent):
             add(call_note())
         # Words of theirs no reply has covered yet (cut off, or no reply before their next words): main's
         # "one current reply covering every message". Last, right before their words.
+        if (answer := self._first_answer) and answer[0] == self.turn + (1 if peek else 0):
+            add(answer[1])  # (their first words after her first line: her answer's note, this turn only)
         owed = [entry for entry in self.inputs if entry["state"] in ("cut", "lost")][-3:]
         untold = [entry for entry in self.inputs if entry["state"] == "untold"][-3:]
         if owed:
@@ -5478,7 +5607,8 @@ class Queen(Agent):
         def settle(done) -> None:
             feelings._end_turn(self.call_id, turn)
             entry["state"] = _outcome(done)
-            if self.declared.get(getattr(done, "id", "")) or self.untold:  # (it may have given him a result: _covered)
+            if self.declared.get(getattr(done, "id", "")) or self.untold or self._given_untold():  # (it may have given
+                # him a result: _covered)
                 asyncio.get_running_loop().create_task(self._covered(done))
             if entry["state"] == "done":  # a reply that saw the owed words and completed has handled them
                 for owed in shown:
@@ -5767,6 +5897,11 @@ def restated(output: str, words: str) -> bool:
     most results). A sign she gave it, never proof alone: her "X is false" carries X (Queen._said)."""
     output, words = " ".join(output.split()), " ".join(words.split())
     return len(output) >= 24 and output in words
+
+
+def _said(speech) -> bool:
+    """Whether a reply said anything (an assistant message with words)."""
+    return any(i.type == "message" and i.role == "assistant" and (i.text_content or "").strip() for i in speech.chat_items)
 
 
 def _hands_itself(first: asyncio.Future) -> bool:

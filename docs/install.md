@@ -54,13 +54,13 @@ is, the time and time zone, your languages and region, and the names of the apps
 asks for no permission and opens no file. These facts go to the mind Viventium runs on (the one you connected, or the
 model on this Mac) so its first hello can be about you.
 
-![The conversation, with Viventium's first greeting](images/conversation.jpg)
+![The conversation, with Viventium's first greeting](images/hello.jpg)
 
 ## The V in the menu bar
 
 The V opens a small panel. Point at any control and a line under the icons says what it does.
 
-![Eight controls, each with its explanation](images/menu-bar.jpg)
+![The V panel: point at a control and its explanation shows under the icons](images/menu-bar.jpg)
 
 ## Work in the background
 
@@ -105,6 +105,6 @@ Still stuck? The window's one line names the step; include it when you ask for h
 ## Later
 
 - **Start at login:** Settings, System.
-- **Quit:** the power control in the V panel. Viventium rests until you open the app again.
-- **Remove:** turn off start at login, quit, then move Viventium AI from Applications to the Bin. Your Life notes,
+- **Turn off:** the power control in the V panel. Viventium rests until you open the app again.
+- **Remove:** turn off start at login, turn Viventium off, then move Viventium AI from Applications to the Bin. Your Life notes,
   sign-ins and Viventium's own data folder stay on the Mac until you delete them.

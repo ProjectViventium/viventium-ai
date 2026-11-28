@@ -30,6 +30,7 @@ type MarkdownNode = {
   url?: string;
   alt?: string;
   children?: MarkdownNode[];
+  data?: { hProperties?: Record<string, string> };
 };
 function plainArtifactLinks() {
   const visit = (node: MarkdownNode) => {
@@ -43,6 +44,28 @@ function plainArtifactLinks() {
     });
   };
   return visit;
+}
+// A file link of hers that stands alone in its paragraph (her offer's own row, or a line that is only a link) is marked,
+// so a link to a file she never offered is left out there instead of standing as a "Download ..." line that downloads
+// nothing (file-link.tsx). Inside her sentence it stays her label, so the sentence still reads.
+function markLoneFileLinks() {
+  const visit = (node: MarkdownNode) => {
+    for (const child of node.children ?? []) {
+      if (child.type === 'paragraph') {
+        const parts = (child.children ?? []).filter(
+          (part) => part.type !== 'break' && !(part.type === 'text' && !part.value?.trim())
+        );
+        const [link] = parts;
+        if (parts.length === 1 && link.type === 'link' && link.url?.startsWith('#viv-file-'))
+          link.data = {
+            ...link.data,
+            hProperties: { ...link.data?.hProperties, 'data-alone': 'true' },
+          };
+      }
+      visit(child);
+    }
+  };
+  return (tree: MarkdownNode) => visit(tree);
 }
 function keepLineBreaks() {
   const visit = (node: MarkdownNode) => {
@@ -66,6 +89,7 @@ const HER_MARKDOWN = [
   ...Object.values(defaultRemarkPlugins),
   plainArtifactLinks,
   numbersAsText,
+  markLoneFileLinks,
   keepLineBreaks,
 ];
 

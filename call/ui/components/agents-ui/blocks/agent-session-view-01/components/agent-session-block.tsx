@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, type MotionProps, motion } from 'motion/react';
 import { type ReceivedMessage, useAgent, useSessionContext } from '@livekit/components-react';
 import { AgentChatTranscript } from '@/components/agents-ui/agent-chat-transcript';
@@ -9,6 +9,7 @@ import {
   type AgentControlBarControls,
 } from '@/components/agents-ui/agent-control-bar';
 import { MICROPHONE_FAILED } from '@/lib/live';
+import { offeredOnce } from '@/lib/offered-once';
 import { cn } from '@/lib/shadcn/utils';
 import { microphoneSentence } from '@/lib/start-call';
 import { TileLayout } from './tile-view';
@@ -182,7 +183,11 @@ export function AgentSessionView_01({
       .sendText('ready', { topic: 'viv.transcript-ready', destinationIdentities: [identity] })
       .catch(() => {});
   }, [room, identity]);
-  const shown = earlier?.length ? [...earlier, ...messages] : messages;
+  // (each file she offers shown once, where her words carry it: lib/offered-once.ts)
+  const shown = useMemo(
+    () => offeredOnce(earlier?.length ? [...earlier, ...messages] : messages),
+    [earlier, messages]
+  );
   // The conversation ends where the bar below begins, whatever its height (a longer text, files to send): nothing is
   // ever drawn over a message (the chat's status line sat on her last one).
   const barRef = useRef<HTMLDivElement>(null);

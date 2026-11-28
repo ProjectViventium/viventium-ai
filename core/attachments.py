@@ -1166,6 +1166,20 @@ def offered() -> list[str]:
     return list(dict.fromkeys(ref["id"] for _, ref in _offers()))
 
 
+PAGE_PICTURES = {"image/png", "image/jpeg", "image/gif", "image/webp"}  # (pictures a page draws as themselves: raster only)
+
+
+def picture(ref: dict) -> bool:
+    """Whether her page may draw this offered file as a picture: by the type its download goes out as (call/agent.py
+    download_file, from the file's own name), never by her words for it."""
+    return mimetypes.guess_type(Path(ref.get("path") or "").name)[0] in PAGE_PICTURES
+
+
+def offered_pictures() -> list[str]:
+    """The ids among offered() that are pictures (picture): her page draws each as itself, beside its link."""
+    return list(dict.fromkeys(ref["id"] for _, ref in _offers() if picture(ref)))
+
+
 def result_offers(outcomes, *, visible: bool = False, channels: tuple[str, ...] = ()) -> dict[str, dict]:
     """The file offers recorded for these Worker outcomes, keyed by the hash of the offered bytes."""
     return {ref["sha256"]: ref for row, ref in _offers(visible)

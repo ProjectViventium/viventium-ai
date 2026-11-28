@@ -86,6 +86,13 @@ PARTS = {
              "needs": "OPENAI_API_KEY", "speed": "ok", "timed": "1.4 s", "smart": "smart", "sees": True, "search": False, "decides": True,
              "efforts": ["low", "medium", "high"], "effort": "low",
              "env": {"QUEEN": "openai", "QUEEN_MODEL": "gpt-6.1-sol", "QUEEN_URL": ""}},  # (your endpoint: a private line)
+            # Not measured here yet: no time of ours, and a quick check decides (no "decides"). It runs on your OpenAI
+            # key and endpoint as GPT-6.1 Sol does (settings/service.py same_account); a provider that does not have it
+            # deployed is said so, and nothing changes (settings/probe.py NOT_THERE).
+            {"id": "openai-sol-62", "provider": "OpenAI", "model": "GPT-6.2 Sol", "mark": "openai", "where": "key",
+             "needs": "OPENAI_API_KEY", "speed": "ok", "smart": "smart", "tried": False, "sees": True, "search": False,
+             "efforts": ["low", "medium", "high"], "effort": "low",
+             "env": {"QUEEN": "openai", "QUEEN_MODEL": "gpt-6.2-sol", "QUEEN_URL": ""}},
             {"id": "grok", "provider": "SpaceXSI", "model": "Grok 4.7", "mark": "xai", "where": "key",
              "needs": "XAI_API_KEY", "speed": "ok", "smart": "smart", "tried": False, "sees": True, "search": False,
              "env": {"QUEEN": "xai", "QUEEN_MODEL": "grok-4.7", "QUEEN_URL": ""}},
@@ -121,6 +128,8 @@ PARTS = {
             {"id": "claude", "provider": "Anthropic", "model": "Claude Opus 5.5", "mark": "claude", "where": "plan",
              "needs": "claude", "harness": "claude-code", "exact": "claude-opus-5-5", "speed": "slow", "timed": "25 s a small job", "pick": True,
              "smart": "smart", "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"},
+            # (the model vx names for your Codex sign-in, online_models: GPT-6.1 Sol until a bench of ordinary Worker
+            # jobs shows GPT-6.2 Sol at least as good and as fast; 6.2 is in xPerfect's catalog, xperfect-0020)
             {"id": "codex", "provider": "OpenAI", "model": "GPT-6.1 Sol", "mark": "openai", "where": "plan",
              "needs": "codex", "harness": "codex-cli", "exact": "gpt-6.1-sol", "speed": "ok", "timed": "15 s a small job",
              "smart": "smart", "efforts": ["low", "medium", "high", "xhigh"], "effort": "high"},

@@ -57,6 +57,13 @@ UI_PORT=3400
 OLLAMA_VERSION=0.40.15
 OLLAMA_BIN="$HOME/.cache/viventium-light/ollama-$OLLAMA_VERSION/ollama"
 
+online_models() {  # her online Workers' exact models, on your own sign-ins, named once: a new xPerfect state is set up
+  # with them and every start moves an existing one to them (WORKER_MODEL_<HARNESS> in a profile overrides one; the
+  # Workers on this Mac keep this Mac's model). Each is in xPerfect's model catalog. Codex stays on GPT-6.1 Sol until a
+  # bench of ordinary Worker jobs shows GPT-6.2 Sol (brain/patches/xperfect-0020) at least as good and as fast.
+  echo '{"codex-cli": "gpt-6.1-sol", "claude-code": "claude-opus-5-5"}'
+}
+
 xp_ports() {  # xp_ports STATE [api|ui|mcp]: an xPerfect state's own ports, so two can run side by side
   local api=8866 ui=8880 mcp=8867
   case "$1" in *state-local) api=8876; ui=8890; mcp=8877 ;; esac  # (the Workers on this Mac)
@@ -946,7 +953,10 @@ mind_answers() {  # mind_answers [check]: before "Ready", one real answer from t
   # given VX_MIND_WAIT seconds.
   # check (./vx ready, before a restart stops anything): a timeout, a local backup not started yet, or a transient
   # online backup failure is the start's own to ask again at its gate. It writes nothing and returns 1 with one line, or 0.
-  local looking="${1:-}" wait="${VX_MIND_WAIT:-60}" first="" second="" what="" backed="" key said here probe=answer
+  # What is only for now (a key or a subscription refused, a limit: settings/probe.py FOR_NOW) is its backup's to answer
+  # here as at a start, so a restart goes on. Only a setup that can never work (its provider has no such model there:
+  # the probe's NOT_THERE, 3) refuses the check whatever its backup could do, and returns 3 with one plain line.
+  local looking="${1:-}" wait="${VX_MIND_WAIT:-60}" first="" second="" what="" backed="" key said here probe=answer there=0
   [ -z "$looking" ] || wait="${VX_MIND_WAIT:-10}"
   if [ "$QUEEN" = ollama ]; then  # (a mind on this Mac declares no backup)
     first=$(answered "${QUEEN_URL:-http://127.0.0.1:11435/v1}" "$QUEEN_MODEL" "$wait")
@@ -974,8 +984,12 @@ mind_answers() {  # mind_answers [check]: before "Ready", one real answer from t
       if said=$( (load_keys; cd "$ROOT" && VX_MIND_WAIT="${VX_MIND_WAIT:-25}" "$ROOT/.venv/bin/python" -m settings.probe "$probe") \
           2>"$into"); then first=""
       else
+        there=$?  # (settings/probe.py: NOT_THERE, 3, when its provider has no such model there)
         first=$(sed -n 1p <<<"$said"); what=$(sed -n 2p <<<"$said")
-        [ -n "$first" ] || { first=failed; what="It could not be asked"; }  # (the check itself did not run)
+        [ -n "$first" ] || { first=failed; what="It could not be asked"; there=0; }  # (the check itself did not run)
+      fi
+      if [ -n "$looking" ] && [ "$there" = 3 ]; then  # (a setup that can never work: no backup answers in its place)
+        echo "Viventium's mind cannot run on $PROFILE: ${what%.}. Choose another mind in Settings, under Brain."; return 3
       fi
       if [ -n "$looking" ] && [ "$first" = silent ]; then return 0; fi
     fi
@@ -1045,7 +1059,8 @@ mind_answers() {  # mind_answers [check]: before "Ready", one real answer from t
 coordinator() {  # coordinator [STATE HARNESS local|signed-in]: an xPerfect state's coordinator settings and its own
   # ports (this profile's Workers by default); prints "changed" if updated
   local state="${1:-$XPERFECT_STATE}"
-  python3 - "$state/config.json" "${2:-${WORKER_PROFILE:-codex-cli}}" "${3:-${WORKERS:-signed-in}}" "$ROOT" "${LOGS:-$ROOT/logs}" $(xp_ports "$state") <<'EOF'
+  ONLINE_MODELS="$(online_models)" \
+    python3 - "$state/config.json" "${2:-${WORKER_PROFILE:-codex-cli}}" "${3:-${WORKERS:-signed-in}}" "$ROOT" "${LOGS:-$ROOT/logs}" $(xp_ports "$state") <<'EOF'
 import json, os, platform, sys
 path, profile, workers, root, logs = sys.argv[1:6]
 ports = dict(zip(("api", "ui", "mcp"), map(int, sys.argv[6:9])))  # (xPerfect reads them when it starts)
@@ -1093,10 +1108,13 @@ env["GLASSHIVE_ENABLE_LOCAL_MACOS_CLAUDE_ACCOUNTS"] = "1"
 # On the local model one GPU serves her and the work: the coordinator is not woken again just to restate the
 # Worker's result (Light tells the Worker's own words); in the cloud it reports, and can add what it saw.
 # Each Worker harness's thinking effort and exact model, as chosen (WORKER_EFFORT_<HARNESS>, WORKER_MODEL_<HARNESS>;
-# xPerfect's own names for them below). Unset: high, and the model this state was set up with.
+# xPerfect's own names for them below). Unset: high, and on your own sign-ins the model vx names for it (online_models);
+# on this Mac, the model this state was set up with.
 names = {"claude-code": ("CLAUDE_CODE", "WPR_CLAUDE_CODE_EFFORT"), "codex-cli": ("CODEX_CLI", "WPR_CODEX_CLI_REASONING_EFFORT"),
          "grok-build": ("GROK_BUILD", "WPR_GROK_REASONING_EFFORT")}
 models = dict(c["models"])
+if workers != "local":
+    models.update(json.loads(os.environ["ONLINE_MODELS"]))
 managed_auth = os.path.join(root, "tools", "grok-worker-auth")
 env["WPR_GROK_MANAGED_AUTH_PROVIDER"] = managed_auth
 env["WPR_GROK_AUTH_OFF_PATH"] = os.path.join(logs, "grok_mind.off")
@@ -2484,7 +2502,7 @@ setup() {  # idempotent: install what's missing, create private xPerfect states
     [ -f "$state/config.json" ] && continue
     "$ROOT/brain/xperfect/xperfect" doctor --state-dir "$state" --api-port "$(xp_ports "$state" api)" --ui-port "$(xp_ports "$state" ui)" \
       --mcp-port "$(xp_ports "$state" mcp)" >/dev/null 2>&1 || true
-    python3 - "$state/config.json" "$kind" "$ROOT" <<'EOF'
+    ONLINE_MODELS="$(online_models)" python3 - "$state/config.json" "$kind" "$ROOT" <<'EOF'
 import json, os, sys
 path, kind, root = sys.argv[1:]
 c = json.load(open(path))
@@ -2499,8 +2517,8 @@ if kind == "local":  # Workers on the local Qwen, through this project's own Cod
                      # 21 s -> 10 s on the local model); web search needs Anthropic's servers anyway.
                      "WPR_CLAUDE_CODE_DENY": json.dumps(json.loads(c["env"]["WPR_CLAUDE_CODE_DENY"]) + ["Task", "CronCreate", "CronDelete", "CronList", "DesignSync", "EnterWorktree", "ExitWorktree", "ListAgents", "NotebookEdit", "ReportFindings", "ScheduleWakeup", "SendMessage", "Skill", "TaskStop", "WebFetch", "WebSearch", "Workflow"])})
     c["models"] = {"codex-cli": "qwen3.6:latest", "claude-code": "qwen3.6:latest"}
-else:                # Workers on your own Codex / Claude Code sign-ins
-    c["models"] = {"codex-cli": "gpt-6.1-sol", "claude-code": "claude-opus-5-5"}
+else:                # Workers on your own Codex / Claude Code sign-ins (vx's online_models)
+    c["models"] = json.loads(os.environ["ONLINE_MODELS"])
 with open(path + ".tmp", "w", opener=lambda p, f: os.open(p, f, 0o600)) as h:
     json.dump(c, h, indent=2); h.write("\n")
 os.replace(path + ".tmp", path)
@@ -2537,8 +2555,9 @@ case "${1:-}" in
   ready) load_profile "${2:-$(cat "$LOGS/profile" 2>/dev/null || echo local)}" check; preflight
     require_small_mac_sign_in </dev/null; ask_keys </dev/null; sign_in </dev/null
     # An online mind is asked for a word first: a key that exists can still be refused, or point at the wrong place. Only a
-    # definite failure refuses (mind_answers check): no answer in time is the start's to ask again at its gate.
-    if [ "$QUEEN" != ollama ] && [ -x "$ROOT/.venv/bin/python" ]; then mind_answers check || exit 1; fi
+    # definite failure refuses (mind_answers check): no answer in time is the start's to ask again at its gate, and what is
+    # only for now is its backup's. Exit 3 when its provider has no such model there (the settings page says so), else 1.
+    if [ "$QUEEN" != ollama ] && [ -x "$ROOT/.venv/bin/python" ]; then mind_answers check || exit $?; fi
     echo "Ready: $PROFILE can start on this Mac." ;;
   restart) restart "${2:-}" ;;
   status) status ;;
