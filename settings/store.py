@@ -8,6 +8,7 @@
    how she behaves on a call): one JSON file in her state folder. Free text never goes into a file the shell
    reads.
 """
+import fcntl
 import json
 import os
 import subprocess
@@ -161,14 +162,18 @@ def remembered() -> dict:
 
 
 def remember(change) -> dict:
-    """Read, change and save in one step (the page saves one small thing at a time)."""
-    saved = remembered()
-    change(saved)
+    """Read, change and save in one step (the page saves one small thing at a time), one writer at a time: the page, the
+    menu bar's panel and her agent each write from their own process, and a change decided on what it read (the newest
+    call mode wins) must not be overwritten by one that read before it."""
     path = state_file()
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings-")
-    with os.fdopen(fd, "w") as handle:
-        json.dump(saved, handle, indent=1)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    with open(path.with_name(path.name + ".lock"), "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        saved = remembered()
+        change(saved)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".settings-")
+        with os.fdopen(fd, "w") as handle:
+            json.dump(saved, handle, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
     return saved

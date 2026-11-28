@@ -2,6 +2,29 @@
 
 What changed for people who use Viventium AI, one entry per public release, newest first.
 
+## 0.5.0 experimental · release 59 · 28 November 2026
+
+- In Settings on a phone's width, the Brain section's View live and Speed and smarts stay side by side on their own
+  line under the heading. Checked on the settings page at a phone's width and on a desk.
+- Checked again on the conversation page: Stop ends an answer at once and the rest never comes, and in Wing or Listen
+  only each new thing said brings one short note that leaves by itself.
+
+## 0.5.0 experimental · release 58 · 28 November 2026
+
+- Background work looks around before it starts. A Worker's instructions now ask it to take in the situation first: the
+  tools, apps, accounts and AI apps on the computer, and the history they keep, so it learns how you like things done,
+  follows your request the way you would, and owns the request through to a useful result.
+- Viventium no longer announces that it is an AI or describes the machine: its first greeting no longer says so (the
+  line under the message box went in the last release). Asked directly, it still answers truthfully.
+- Talk, Wing or Listen only chosen on the conversation page is kept for your next call again, the way the menu bar and
+  Settings keep it. Each choice carries when it was made, so a choice on the page never undoes a later one from the
+  menu bar, and settings are written one at a time, so changes made at the same moment from different places are all
+  kept. Checked without a page: a late save from the page left the menu bar's later choice in place, and changes from
+  three places at once were all kept (before, the late save undid the later choice and most of those changes were
+  lost); on the page, a choice made there carries into a new call.
+- Known limit: in Settings, on a phone's width, the Brain section's View live and Speed and smarts could land on
+  separate lines.
+
 ## 0.5.0 experimental · release 57 · 27 November 2026
 
 - Calls can have their own mind. With a call's mind configured (for example GPT-6.1 Sol on your own OpenAI key), the

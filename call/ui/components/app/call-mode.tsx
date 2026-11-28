@@ -6,8 +6,9 @@ import { useSessionContext } from '@livekit/components-react';
 import { cn } from '@/lib/shadcn/utils';
 
 // How she is with you on this call: Talk, Wing (quiet beside you, speaks when spoken to) or Listen only
-// (hears and remembers, never speaks). A call starts the way the settings page says; this switches it live,
-// for this call, by telling her agent on the call's own data channel (topic "viv.mode"). Every choice made here is told
+// (hears and remembers, never speaks). A call starts the way the settings page says; this switches it live by
+// telling her agent on the call's own data channel (topic "viv.mode"), and saves it for the next call (saveMode).
+// Every choice made here is told
 // (a choice remembered as told was not sent again after the menu bar had changed her mode meanwhile, so
 // the page showed Wing while she stayed in Listen only); her agent ignores one that changes nothing.
 
@@ -105,6 +106,17 @@ export function ModeToast({ mode }: { mode: string }) {
   );
 }
 
+// A choice made on the switch is saved as how the next call starts too, the way the menu bar's and the settings page's
+// are: one mode everywhere. It carries when it was made, so a save that arrives after a later choice from the menu bar's
+// panel is not kept and never undoes it (settings/service.py set_call_mode).
+export function saveMode(id: string, at: number) {
+  fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ call_mode: id, call_mode_at: at }),
+  }).catch(() => undefined);
+}
+
 export function CallMode({
   mode,
   modes,
@@ -116,9 +128,11 @@ export function CallMode({
 }) {
   const { room, isConnected } = useSessionContext();
   const choose = (id: string) => {
+    const at = Date.now() / 1000;
     onChange(id);
     if (isConnected && room)
       room.localParticipant.sendText(id, { topic: 'viv.mode' }).catch(() => undefined);
+    saveMode(id, at);
   };
   return (
     <div

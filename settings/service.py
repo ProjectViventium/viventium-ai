@@ -721,12 +721,19 @@ def set_presence(shown) -> str:
     return ""
 
 
-def set_call_mode(mode) -> str:
-    """Talk, Wing or Listen only: the next call's, and the open conversation's at once (core/live.py)."""
+def set_call_mode(mode, at=None) -> str:
+    """Talk, Wing or Listen only: the next call's, and the open conversation's at once (core/live.py). at: when it was
+    chosen, from a page that saves its choice after the fact; one older than the last choice written is not kept (a page's
+    save can arrive after a later choice from the menu bar's panel, and must not undo it). Unsaid, or later than now: now."""
     if mode not in [m["id"] for m in catalog.CALL_MODES]:
         return "That call mode does not exist."
-    # (with when it was chosen: chosen again while a call had switched itself on its page, every open call still follows)
-    store.remember(lambda s: s.update(call_mode=mode, call_mode_at=round(time.time(), 3)))
+    now = time.time()
+    when = min(float(at), now) if isinstance(at, (int, float)) and not isinstance(at, bool) and at == at else now
+
+    def keep(saved: dict) -> None:  # (with when it was chosen: chosen again while a call had switched itself, every open
+        if float(saved.get("call_mode_at") or 0) <= when:  # call still follows; an older choice changes nothing)
+            saved.update(call_mode=mode, call_mode_at=round(when, 3))
+    store.remember(keep)
     return ""
 
 
@@ -998,7 +1005,7 @@ def apply(want: dict) -> dict:
         keep_media(kind, option)
     if "presence" in want and (why := set_presence(want["presence"])):
         return no(why)
-    if "call_mode" in want and (why := set_call_mode(want["call_mode"])):
+    if "call_mode" in want and (why := set_call_mode(want["call_mode"], want.get("call_mode_at"))):
         return no(why)
     if "telegram_voice" in want:  # the voice switch for voice replies on Telegram (chat/telegram.py VOICE_SWITCH)
         if not isinstance(want["telegram_voice"], bool):

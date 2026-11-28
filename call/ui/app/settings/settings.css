@@ -2779,6 +2779,13 @@ button.vs-tile:hover {
   .vs-head:has(.vsx-yet) {
     flex-wrap: wrap;
   }
+  /* Brain: its two buttons stay side by side (View live left of Speed and smarts), on their own line under the title */
+  .vs-head:has(.vs-brain-aside) {
+    flex-wrap: wrap;
+  }
+  .vs-brain-aside {
+    flex-wrap: nowrap;
+  }
 }
 
 /* -- Accounts: in use or not, and how each was last found -- */

@@ -282,7 +282,7 @@ export function Brain({ settings, save }: { settings: Settings; save: Save }) {
       title="Brain"
       aside={
         // (her live brain, the Subconscious page's own button, here too: easy to find where the brain is set)
-        <span className="vsx-aside">
+        <span className="vsx-aside vs-brain-aside">
           <Link href="/settings/subconscious/live" className="vsx-live">
             <BrainCircuit />
             View live
